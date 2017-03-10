@@ -471,7 +471,7 @@ class Parser(object):
 
         # also print out number of correct actions (even if tag was wrong)
         # errors that don't accumulate (tokens are tested individually with
-        # gold inputs)
+        # gold stack)
         self.logger.info('Gold Stack Error Metric (test_set)')
         self.logger.info('Actions+Labels: %d/%d (%.2f%%), '
                          'Actions: %d/%d (%.2f%%)' % \
