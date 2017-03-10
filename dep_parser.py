@@ -285,7 +285,7 @@ class Parser(object):
 
 
     '''
-    Start training where we left off
+    Start training from scratch, or from where we left off
     '''
     def startTraining(self):
         batchSize = self.modelParams.cfg['batchSize']
@@ -342,6 +342,7 @@ class Parser(object):
                     whole training corpus, whereas `i` is just the batch
                     iteration number
                 '''
+
                 features_major_types, features_output, gold_actions, \
                     epoch_num = reader_output
 
@@ -378,21 +379,20 @@ class Parser(object):
                 if i > 0 and i % save_freq == 0:
                     save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
                     self.logger.info('Model saved to file: %s' % save_path)
-                    self.doEvaluation(sess)
+                    self.quickEvaluationMetric(sess)
 
                 if i > 0 and i % eval_freq == 0:
-                    self.doEvaluationAndPrintOutput(sess)
+                    self.attachmentMetric(sess)
 
                 epoch_num_old = epoch_num
 
                 i += 1
 
     '''
-    Evaluate a trained model
-
-    FIXME: invalid because we initialize parser labels with GoldParseReader
+    Evaluate a trained model with each token being independent
+    and having a gold stack
     '''
-    def doEvaluation(self, sess):
+    def quickEvaluationMetric(self, sess):
         batchSize = self.modelParams.cfg['batchSize']
         featureStrings = self.modelParams.cfg['featureStrings']
 
@@ -472,7 +472,7 @@ class Parser(object):
         # also print out number of correct actions (even if tag was wrong)
         # errors that don't accumulate (tokens are tested individually with
         # gold inputs)
-        self.logger.info('Non-Propagated Error Measure (test_set)')
+        self.logger.info('Gold Stack Error Metric (test_set)')
         self.logger.info('Actions+Labels: %d/%d (%.2f%%), '
                          'Actions: %d/%d (%.2f%%)' % \
                          (correctElems, totalElems, 100.0 * \
@@ -480,7 +480,8 @@ class Parser(object):
                          correctActions, totalElems, 100.0 * \
                          (float(correctActions) / float(totalElems))))
 
-    def beamSearchExperiment(self, sess):
+
+    def attachmentMetric(self, sess):
         batchSize = self.modelParams.cfg['batchSize']
         featureStrings = self.modelParams.cfg['featureStrings']
         topK = self.modelParams.cfg['topK']
@@ -492,149 +493,7 @@ class Parser(object):
 
         # evaluate sentence-wide accuracy by UAS and LAS
         # of course, token errors can accumulate and this is why sentence-wide
-        # accuracy is lower
-        # than token-only accuracy given by doEvaluation()
-
-        # batch size set at one temporarily to get one sentence
-        test_reader_decoded = DecodedParseReader(self.testingCorpus, 1, \
-            featureStrings, self.featureMaps, epoch_print=False)
-
-        correctActions = 0
-        correctElems = 0
-        totalElems = 0
-
-        outputs = []
-
-        filled_count = 0
-        pred_top_k_var = []
-        
-        test_runs = 200
-        for i in range(test_runs):
-            test_reader_output = test_reader_decoded.nextFeatureBags(
-                pred_top_k_var, filled_count)
-
-            if test_reader_output[0] == None:
-                print('eval error')
-                return
-            
-            features_major_types, features_output, epochs, \
-                filled_count = test_reader_output
-
-            embeddings = []
-
-            # order of features will match the order of our arrays above
-            for k in range(len(features_output)):
-                embeddings.append(tf.nn.embedding_lookup(
-                    self.featureEmbeddings[k], features_output[k]))
-
-                embeddings[-1] = tf.reshape(embeddings[-1], \
-                    [-1, len(self.featureNames[k]) * \
-                    self.featureEmbeddingSizes[k]])
-            
-            tf_batch_x = tf.concat(1, embeddings)
-
-            Y_pred_top_k = sess.run(self.pred_top_k, \
-                feed_dict={self.X: tf_batch_x.eval()})
-
-            # Y_pred_top_k[0][i]: K top values for token i (descending order)
-            #
-            # [ 12.58759022  11.70285416   6.45877123   6.01622534
-            #   4.81124258 1.8947413    1.11786246  -0.2629841
-            #   -1.64534914  -1.66685677]
-            #
-            # Y_pred_top_k[1][i]: K top indices for token i
-            # [ 3  0  7 11 17 55 13  1  9 51]
-            #
-            # we're interested in indices (indicating our desired action)
-
-            # change to major index being sentence
-            pred_top_k_var = []
-
-            for m in range(len(Y_pred_top_k[1])):
-                assert len(Y_pred_top_k[1][m]) == topK
-                pred_top_k_var.append(Y_pred_top_k[1][m])
-
-            sentences = test_reader_decoded.getNextAnnotations()
-            outputs.append(sentences)
-
-        # also print out number of correct actions (even if tag was wrong)
-        #logger.info('Correct actions+arcs: %d/%d, correct actions: %d' % \
-        #    (correctElems, totalElems, correctActions))
-
-        # we need to make sure unseen words get mapped to unknown values when
-        # we use an unseen corpus
-
-        token_count = 0
-        deprel_correct = 0
-        head_correct = 0
-        deprel_and_head_correct = 0
-
-        for sentences in outputs:
-            print('-'*20)
-            for sentence in sentences:
-                print('-'*20)
-                #print([w for w in sentence.tokens])
-                for w in sentence.tokens:
-                    suffix = ''
-
-                    gold_head = w.HEAD
-                    gold_deprel = w.DEPREL
-
-                    if gold_head == -1:
-                        # FIXME: is this giving ROOT node free credit
-                        # even when predicted wrongly?
-                        gold_deprel = "ROOT"
-
-                    if w.parsedHead == -1:
-                        # make it simple
-                        w.parsedLabel = "ROOT"
-
-                    if w.parsedLabel == gold_deprel:
-                        deprel_correct += 1
-                    else:
-                        suffix = 'L'
-
-                    if w.parsedHead == gold_head:
-                        head_correct += 1
-                    else:
-                        suffix += 'H'
-
-                    if w.parsedLabel == gold_deprel and \
-                            w.parsedHead == gold_head:
-                        deprel_and_head_correct += 1
-                        suffix = 'O' # both correct
-
-                    token_count += 1
-
-                    if w.parsedHead == -1:
-                        logger.info('%-20s%-10s%-5d%-5s' % \
-                            (w.FORM, 'ROOT', w.parsedHead, suffix))
-                    else:
-                        logger.info('%-20s%-10s%-5d%-5s' % \
-                            (w.FORM, w.parsedLabel, w.parsedHead, suffix))
-
-        # errors that accumulate (tokens are tested based on previous decoded
-        # decisions, which could screw up shifting and arcing, etc)
-        logger.info('accumulated error measure')
-        logger.info('accuracy(UAS): %d/%d' % (head_correct, token_count))
-        logger.info('accuracy(LAS): %d/%d' % (deprel_and_head_correct, \
-            token_count))
-        logger.info('accuracy(deprel correct): %d/%d' % (deprel_correct, \
-            token_count))
-
-    def doEvaluationAndPrintOutput(self, sess):
-        batchSize = self.modelParams.cfg['batchSize']
-        featureStrings = self.modelParams.cfg['featureStrings']
-        topK = self.modelParams.cfg['topK']
-
-        #if not self.testingCorpus:
-        self.testingCorpus = ParsedConllFile()
-        self.testingCorpus.read(open(self.modelParams.testingFile, 'r',
-                                         encoding='utf-8').read())
-
-        # evaluate sentence-wide accuracy by UAS and LAS
-        # of course, token errors can accumulate and this is why sentence-wide
-        # accuracy is lower than token-only accuracy given by doEvaluation()
+        # accuracy is lower than token-only accuracy given by quickEvaluationMetric()
 
         # batch size set at one temporarily
         test_reader_decoded = DecodedParseReader(self.testingCorpus, \
@@ -753,7 +612,7 @@ class Parser(object):
 
         # errors that accumulate (tokens are tested based on previous decoded
         # decisions, which could screw up shifting and arcing, etc)
-        logger.info('Propagated Error Measure (test_set)')
+        logger.info('Attachment Error Metric (test_set)')
         logger.info('Accuracy(UAS): %d/%d (%.2f%%)' % \
             (head_correct, token_count,
             100.0 * float(head_correct) / float(token_count)))
