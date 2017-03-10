@@ -1,5 +1,7 @@
 # ash-parser
 
+This is for a class project.
+
 Attempt to reproduce a [Chen and Manning (2014)](http://cs.stanford.edu/people/danqi/papers/emnlp2014.pdf) style neural network parser in Python and TensorFlow. Many elements copied rather shamelessly from [SyntaxNet](https://github.com/tensorflow/models/tree/master/syntaxnet) (thanks Google!)
 
 Currently used TensorFlow version is 0.12.0-rc0. Will migrate to 1.0 soon.
