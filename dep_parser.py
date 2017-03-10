@@ -323,8 +323,9 @@ class Parser(object):
                 self.logger.info('Model restored')
                 self.logger.info('Continue fitting')
 
-            # every 50 batches, reset avg and print
-            print_freq = 50
+            # every 10 batches, reset avg and print
+            print_freq = 10
+
             save_freq = 50
             eval_freq = 200
 
@@ -368,16 +369,16 @@ class Parser(object):
                 # divide by number of actual batch items returned
                 avg_cost += c / len(gold_actions)
 
-                if i % print_freq == 0:
+                if i > 0 and i % print_freq == 0:
                     self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
                         (epoch_num, i+1, "{:.9e}".format(avg_cost)))
-                    self.doEvaluation(sess)
                     # reset avg
                     avg_cost = 0.0
 
                 if i > 0 and i % save_freq == 0:
                     save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
                     self.logger.info('Model saved to file: %s' % save_path)
+                    self.doEvaluation(sess)
 
                 if i > 0 and i % eval_freq == 0:
                     self.doEvaluationAndPrintOutput(sess)
