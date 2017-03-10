@@ -1,6 +1,9 @@
 '''
-Represents a feature encoded as an index
-Sorts base values by frequency in descending order and then name in ascending order
+Represents a feature encoded as a sparse index
+
+Sorts base values by frequency in descending order and then name in ascending
+order
+
 Sorting ensures equivalent behavior per run
 '''
 class IndexEncodedFeatureMap(object):
@@ -71,7 +74,8 @@ class IndexEncodedFeatureMap(object):
         fd.close()
     
     '''
-    Finalize indices and sort by descending frequency of each term, and then alphebatically
+    Finalize indices and sort by descending frequency of each term, and then
+    alphabetically
     Index 0 will be the most frequent term
     '''
     def finalizeBaseValues(self):
@@ -89,7 +93,8 @@ class IndexEncodedFeatureMap(object):
         # iterate frequencies in descending order
         for f in allFreqs:
             round2Tmp = []
-            # find all items with this frequency and sort them by name, ascending
+            # find all items with this frequency and sort them by name,
+            # ascending
             for (termFreq, termName) in round1Items:
                 if termFreq == f:
                     round2Tmp.append(termName)
@@ -112,7 +117,8 @@ class IndexEncodedFeatureMap(object):
         for (i, v) in self.indexToValueMap.items():
             self.valueToIndexMap[v] = i
 
-        assert len(self.valueToIndexMap) == len(self.indexToValueMap), 'index<->value map length mismatch'
+        assert len(self.valueToIndexMap) == len(self.indexToValueMap), \
+            'index<->value map length mismatch'
         self.isFinalized = True
 
     '''

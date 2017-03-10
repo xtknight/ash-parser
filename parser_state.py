@@ -3,7 +3,7 @@
 from conll_utils import ParsedConllSentence, ParsedConllToken
 
 '''
-Stores all labels and POS tags as integer format to save space
+Handles an individual parsing state within a sentence
 '''
 class ParserState(object):
     SHIFT       = 0
@@ -186,7 +186,8 @@ class ParserState(object):
         assert index < self.num_tokens_
         if index == -1:
             return self.rootLabel()
-        gold_label = self.feature_maps['label'].valueToIndex(self.getToken(index).DEPREL)
+        gold_label = self.feature_maps['label'] \
+            .valueToIndex(self.getToken(index).DEPREL)
         return gold_label
 
     def getToken(self, index):

@@ -2,7 +2,8 @@ import logging
 from feature_extractor import SparseFeatureExtractor
 from sentence_batch import SentenceBatch
 from parser_state import ParserState
-from arc_standard_transition_system import ArcStandardTransitionSystem, ArcStandardTransitionState
+from arc_standard_transition_system import ArcStandardTransitionSystem, \
+    ArcStandardTransitionState
 
 '''
 Provide a batch of sentences to the trainer
@@ -10,13 +11,15 @@ Provide a batch of sentences to the trainer
 Maintains batch_size slots of sentences, each one with its own parser state
 '''
 class GoldParseReader(object):
-    def __init__(self, input_corpus, batch_size, feature_strings, feature_maps, epoch_print = True):
+    def __init__(self, input_corpus, batch_size, feature_strings, feature_maps,
+                 epoch_print = True):
         self.input_corpus = input_corpus
         self.batch_size = batch_size
         self.feature_strings = feature_strings
         self.feature_maps = feature_maps
         self.epoch_print = epoch_print
-        self.feature_extractor = SparseFeatureExtractor(self.feature_strings, self.feature_maps)
+        self.feature_extractor = SparseFeatureExtractor(self.feature_strings,
+                                                        self.feature_maps)
 
         self.sentence_batch = SentenceBatch(input_corpus, self.batch_size)
         self.parser_states = [None for i in range(self.batch_size)]
@@ -36,10 +39,12 @@ class GoldParseReader(object):
         self.logger.debug('Slot(%d): advance sentence' % i)
         assert i >= 0 and i < self.batch_size
         if(self.sentence_batch.advanceSentence(i)):
-            self.parser_states[i] = ParserState(self.sentence_batch.sentence(i), self.feature_maps)
+            self.parser_states[i] = ParserState(self.sentence_batch.sentence(i),
+                                                self.feature_maps)
             # necessary for initializing and pushing root
             # keep arc_states in sync with parser_states
-            self.arc_states[i] = ArcStandardTransitionState(self.parser_states[i])
+            self.arc_states[i] = \
+                ArcStandardTransitionState(self.parser_states[i])
         else:
             self.parser_states[i] = None
             self.arc_states[i] = None
@@ -51,17 +56,27 @@ class GoldParseReader(object):
         for i in range(self.batch_size):
             if self.state(i) != None:
                 self.logger.debug('Slot(%d): perform actions' % i)
-                nextGoldAction = self.transition_system.getNextGoldAction(self.state(i))
-                self.logger.debug('performActions(): ' + str(i) + ': action ' + str(self.transition_system.actionAsString(nextGoldAction, self.state(i), self.feature_maps)))
+
+                nextGoldAction = \
+                    self.transition_system.getNextGoldAction(self.state(i))
+
+                self.logger.debug('Slot(%d): perform action %s' %
+                    (i, self.transition_system.actionAsString(
+                        nextGoldAction, self.state(i), self.feature_maps)))
+
                 try:
-                    self.transition_system.performAction(nextGoldAction, self.state(i))
+                    self.transition_system.performAction(
+                        action=nextGoldAction,
+                        state=self.state(i))
                 except:
-                    self.logger.debug('Warning: performActions(): ' + str(i) + ': invalid action at batch slot')
+                    self.logger.debug(
+                        'Slot(%d): invalid action at batch slot' % i)
                     # This is probably because of a non-projective input
                     # We could projectivize or remove it...
-                    # Or just do default actions and give wrong data, like we do now...
-                    ## TODO: remove erroneous ones from training set??
-                    self.transition_system.performAction(self.transition_system.getDefaultAction(self.state(i)), self.state(i))
+                    self.transition_system.performAction(
+                        action=self.transition_system.getDefaultAction(
+                            self.state(i)),
+                        state=self.state(i))
 
     '''
     Concatenate and return feature bags for all sentence slots, grouped
@@ -124,10 +139,13 @@ class GoldParseReader(object):
                     gold_actions = []
 
                 try:
-                    gold_actions.append(self.transition_system.getNextGoldAction(self.state(i)))
+                    gold_actions.append(
+                        self.transition_system.getNextGoldAction(self.state(i)))
                 except:
                     self.logger.info('Warning: invalid batch slot')
                     ## TODO: remove erroneous ones from training set??
-                    gold_actions.append(self.transition_system.getDefaultAction(self.state(i)))
+                    gold_actions.append(
+                        self.transition_system.getDefaultAction(self.state(i)))
 
-        return features_major_types, features_output, gold_actions, self.num_epochs
+        return features_major_types, features_output, gold_actions, \
+               self.num_epochs

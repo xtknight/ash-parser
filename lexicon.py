@@ -36,9 +36,12 @@ class Lexicon(object):
 
 
     def read(self):
-        self.tagMap = IndexEncodedFeatureMap().loadFrom(self.modelParams.getFilePath('tag-map'))
-        self.labelMap = IndexEncodedFeatureMap().loadFrom(self.modelParams.getFilePath('label-map'))
-        self.wordMap = IndexEncodedFeatureMap().loadFrom(self.modelParams.getFilePath('word-map'))
+        self.tagMap = IndexEncodedFeatureMap().loadFrom(
+            self.modelParams.getFilePath('tag-map'))
+        self.labelMap = IndexEncodedFeatureMap().loadFrom(
+            self.modelParams.getFilePath('label-map'))
+        self.wordMap = IndexEncodedFeatureMap().loadFrom(
+            self.modelParams.getFilePath('word-map'))
         
         # special values don't get saved, so we still need to finalize lexicon
         self.finalizeLexicon()
@@ -68,7 +71,8 @@ class Lexicon(object):
         self.tagMap.appendSpecialValue("<OUTSIDE>")
         self.labelMap.appendSpecialValue("<OUTSIDE>")
 
-        self.featureMaps = {'word': self.wordMap, 'tag': self.tagMap, 'label': self.labelMap}
+        self.featureMaps = {'word': self.wordMap, 'tag': self.tagMap,
+                            'label': self.labelMap}
 
 
     def getFeatureMaps(self):

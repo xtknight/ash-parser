@@ -31,4 +31,5 @@ class ModelParameters(object):
         return '%s/%s' % (fixPath(self.modelFolder), fileType)
 
     def isValidModel(self):
-        return self.modelFolder != None and self.trainingFile != None and self.testingFile != None
+        return self.modelFolder != None and self.trainingFile != None and \
+            self.testingFile != None

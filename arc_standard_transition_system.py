@@ -15,10 +15,8 @@ class ArcStandardTransitionState(object):
             if i != state.stackSize() - 1:
                 s += ' '
 
-            if word == '':
-                ## FIXME: assumes fullword of '' means ROOT internal to the parser...which it happens to, now...
-                # but it may not always...hence this assert...
-                assert state.getToken(state.stack(i)).id == -1
+            # only for internal ROOT token at start of stack
+            if word == None:
                 s += 'ROOT'
             else:
                 s += word
@@ -70,16 +68,19 @@ class ArcStandardTransitionSystem(object):
         return self.rightArcAction(2)
 
     def getNextGoldAction(self, state):
-        # nothing else we can do except shift to the end (leaving us with only the remaining 'ROOT' element)
+        # nothing else we can do except shift to the end
+        # (leaving us with only the remaining 'ROOT' element)
         if(state.stackSize() < 2):
             assert not state.endOfInput()
             #print('STACK TOO SMALL: RETURN DEFAULT SHIFT ACTION')
             return self.shiftAction()
 
         # S|i|j
-        # if HEAD(j) == i... (and we are done with children to the right of j)... add right arc i->j:
+        # if HEAD(j) == i... (and we are done with children to the right of j)
+        # add right arc i->j:
         # (S|i|j, B) => (S|i, B)
-        if(state.goldHead(state.stack(0)) == state.stack(1) and self.doneChildrenRightOf(state, state.stack(0))):
+        if(state.goldHead(state.stack(0)) == state.stack(1) and \
+                self.doneChildrenRightOf(state, state.stack(0))):
             gold_label = state.goldLabel(state.stack(0))
             return self.rightArcAction(gold_label)
 
@@ -127,15 +128,14 @@ class ArcStandardTransitionSystem(object):
 
     def isAllowedLeftArc(self, state):
         # Left-arc requires two or more tokens on the stack but the first token
-        # is the root an we do not want a left arc to the root. ??? FIXME?>??
+        # is the root and we do not want a left arc to the root.
         return (state.stackSize() > 2)
 
     def isAllowedRightArc(self, state):
-        # Right arc requires three or more tokens on the stack. ??? FIXME?>??
+        # Right arc requires three or more tokens on the stack.
         return (state.stackSize() > 1)
 
     def performAction(self, action, state):
-        # apparently history is not implemented in SyntaxNet either?
         self.performActionWithoutHistory(action, state)
 
     def performActionWithoutHistory(self, action, state):
@@ -186,8 +186,10 @@ class ArcStandardTransitionSystem(object):
         if(self.actionType(action) == ParserState.SHIFT):
             return 'SHIFT'
         elif(self.actionType(action) == ParserState.LEFT_ARC):
-            return 'LEFT_ARC(' + feature_maps['label'].indexToValue(self.label(action)) + ')'
+            return 'LEFT_ARC(' + \
+                feature_maps['label'].indexToValue(self.label(action)) + ')'
         elif(self.actionType(action) == ParserState.RIGHT_ARC):
-            return 'RIGHT_ARC(' + feature_maps['label'].indexToValue(self.label(action)) + ')'
+            return 'RIGHT_ARC(' + \
+                feature_maps['label'].indexToValue(self.label(action)) + ')'
         else:
             return 'UNKNOWN'

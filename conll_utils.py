@@ -2,8 +2,12 @@
 A set of classes to handle input and output of CoNLL-U files
 
 http://universaldependencies.org/docs/format.html
+
+The Parsed* classes are useful to store extra properties needed during
+the parsing process that are external to the Conll instances themselves
 '''
 
+import logging
 
 def encodeNoneAsUnderscore(s):
     if s == None:
@@ -16,7 +20,6 @@ def encodeNoneAsUnderscore_Int(i):
         return '_'
     else:
         return str(i)
-
 
 '''
 Represents a CoNLL token and all its properties (except index)
@@ -105,7 +108,8 @@ class ConllSentence(object):
     Convert to file output representation
     '''
     def toFileOutput(self):
-        return '\n'.join(self.tokens[ID-1].toFileOutput(ID) for ID in range(1, len(self.tokens)+1))
+        return '\n'.join(self.tokens[ID-1].toFileOutput(ID) \
+            for ID in range(1, len(self.tokens)+1))
 
 class ParsedConllSentence(ConllSentence):
     def __init__(self, docid):
@@ -133,6 +137,8 @@ class ConllFile(object):
         self.sentences = []
         # use parsed variant of structures
         self.parsed = parsed
+        self.logger = logging.getLogger('ConllUtils')
+
 
     '''
     Read CoNLL-U from the given string
@@ -179,7 +185,8 @@ class ConllFile(object):
             ln_num += 1
             ln = ln.strip()
             if not ln:
-                # a completely blank line indicates we need to commit the current sentence
+                # a completely blank line indicates we need to commit the
+                # current sentence
                 if current_sentence != None:
                     if not invalid_sentence:
                         commit(current_sentence)
@@ -193,15 +200,18 @@ class ConllFile(object):
             if invalid_sentence: # don't process invalid sentences
                 continue
             cols = [x.strip() for x in ln.split('\t')]
-            assert len(cols) >= 2, 'line %d: must have at least ID and FORM: ' % ln_num + str(cols)
+            assert len(cols) >= 2, \
+                'line %d: must have at least ID and FORM: ' % ln_num + str(cols)
 
             if '-' in cols[0] or '.' in cols[0]:
-                print('line %d: not implemented: ID=%s, invalidating sentence' % (ln_num, cols[0]))
+                self.logger.warning('line %d: not implemented: ID=%s, ' \
+                                    'invalidating sentence' % (ln_num, cols[0]))
                 invalid_sentence = True
                 continue
             else:
                 ID = int(cols[0])
-                assert ID==current_ID+1, 'line %d: token IDs must be in order and increment by one' % ln_num
+                assert ID==current_ID+1, 'line %d: token IDs must be in order' \
+                   ' and increment by one' % ln_num
 
             current_ID = ID
 
@@ -221,7 +231,8 @@ class ConllFile(object):
             current_token.FORM = cols[1]
 
             if len(cols) > 2 and (3 not in excludeCols):
-                # let this be underscore if needed (don't call processUnderscore())
+                # let this be underscore if needed
+                # (don't call processUnderscore())
                 current_token.LEMMA = cols[2]
             if len(cols) > 3 and (4 not in excludeCols):
                 current_token.UPOSTAG = processUnderscore(cols[3])
@@ -229,18 +240,23 @@ class ConllFile(object):
                 current_token.XPOSTAG = processUnderscore(cols[4])
             if len(cols) > 5 and (6 not in excludeCols):
                 if processUnderscore(cols[5]):
-                    current_token.FEATS = [x.strip() for x in cols[5].split('|')]
+                    current_token.FEATS = \
+                        [x.strip() for x in cols[5].split('|')]
                 else:
                     current_token.FEATS = []
             if len(cols) > 6 and (7 not in excludeCols):
                 current_token.HEAD = processUnderscore(cols[6])
                 if current_token.HEAD != None:
                     if '-' in current_token.HEAD or '.' in current_token.HEAD:
-                        print('line %d: not implemented: HEAD=%s, invalidating sentence' % (ln_num, current_token.HEAD))
+                        self.logger.warning('line %d: not implemented: HEAD=%s,'
+                            ' invalidating sentence' % (ln_num, \
+                            current_token.HEAD))
+
                         invalid_sentence = True
                         continue
                     else:
-                        current_token.HEAD = int(current_token.HEAD)-1 # important for parser!
+                        # it's important for parsing that HEAD start at -1
+                        current_token.HEAD = int(current_token.HEAD)-1
             if len(cols) > 7 and (8 not in excludeCols):
                 current_token.DEPREL = processUnderscore(cols[7])
             if len(cols) > 8 and (9 not in excludeCols):
@@ -268,9 +284,6 @@ class ConllFile(object):
         fd.write('\n\n'.join(data))
         fd.flush()
 
-    #def next(self):
-    #    assert self.sentenceIndex != None, 'must have read a CoNLL file in order to iterate it'
-    
     def __iter__(self):
         index = 0
         while index < len(self.sentences):
