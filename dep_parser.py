@@ -70,6 +70,23 @@ if (args.train and args.evaluate) or ((not args.train) and (not args.evaluate)):
           '(--train/--evaluate)')
     sys.exit(1)
 
+
+def BatchedSparseToDense(sparse_indices, output_size):
+    """Batch compatible sparse to dense conversion.
+
+    This is useful for one-hot coded target labels.
+
+    Args:
+      sparse_indices: [batch_size] tensor containing one index per batch
+      output_size: needed in order to generate the correct dense output
+
+    Returns:
+      A [batch_size, output_size] dense tensor.
+    """
+    eye = tf.diag(tf.fill([output_size], tf.constant(1, tf.float32)))
+    return tf.nn.embedding_lookup(eye, sparse_indices)
+
+
 '''
 Entry point for dependency parser
 '''
@@ -207,8 +224,10 @@ class Parser(object):
     '''
     def setupVariables(self, mode='train'):
         learningRate = self.modelParams.cfg['learningRate']
+        momentum = self.modelParams.cfg['momentum']
         topK = self.modelParams.cfg['topK']
         hiddenLayerSizes = self.modelParams.cfg['hiddenLayerSizes']
+        batchSize = self.modelParams.cfg['batchSize']
 
         # Bag of features at each parser state
         self.X = tf.placeholder(tf.float32, [None, self.BAG_OF_FEATURES_LEN], \
@@ -218,8 +237,15 @@ class Parser(object):
         # (One-hot encoding)
         # SHIFT, LEFT_ARC(L), or RIGHT_ARC(L)
         # Output: (, 3+~50)
-        self.Y = tf.placeholder(tf.float32, [None, self.ACTION_COUNT], \
-            name="ph_Y")
+        #self.gold_actions = tf.placeholder(tf.int32, \
+        #    [None, self.ACTION_COUNT], name="ph_gold_actions")
+        #self.gold_actions = tf.placeholder(tf.int32, \
+        #    [None, self.ACTION_COUNT], name="ph_gold_actions")
+
+        self.gold_actions = tf.placeholder(tf.int32, \
+            [None], name="ph_gold_actions")
+
+        self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
         self.weights = []
         self.biases = []
@@ -243,13 +269,17 @@ class Parser(object):
             prevLayerSize = h
         
         # Output layer
-        with tf.variable_scope("layer_out"):
+        with tf.variable_scope("softmax"):
             self.weights.append(tf.get_variable("weights", \
                 [prevLayerSize, self.ACTION_COUNT], \
                 initializer=tf.random_normal_initializer(stddev=1e-4, seed=0)))
 
             self.biases.append(tf.get_variable("biases", \
-                [self.ACTION_COUNT], initializer=tf.constant_initializer(0.2)))
+                [self.ACTION_COUNT], initializer=tf.zeros_initializer))
+
+            #
+            #self.biases.append(tf.get_variable("biases", \
+            #    [self.ACTION_COUNT], initializer=tf.constant_initializer(0.2)))
         
         def greedy_graph_builder(x, weights, biases):
             hidden_layers = []
@@ -257,30 +287,67 @@ class Parser(object):
 
             # Input and hidden layers
             for i in range(len(hiddenLayerSizes)):
-                this_layer = \
-                    tf.add(tf.matmul(last_layer, weights[i]), biases[i])
-
-                this_layer = tf.nn.relu(this_layer)
-
                 # FIXME: decide whether or not to do drop-out
                 #this_layer = tf.nn.dropout(this_layer, 0.5)
+
+                x = tf.convert_to_tensor(last_layer, name="x")
+                w = tf.convert_to_tensor(weights[i], name="w")
+                b = tf.convert_to_tensor(biases[i], name="b")
+
+                with tf.name_scope('relu', 'relu_layer', \
+                        [x, w, b]) as name:
+                    this_layer = tf.nn.relu(
+                        tf.nn.xw_plus_b(x, w, b),
+                        name=name)
 
                 hidden_layers.append(this_layer)
                 last_layer = hidden_layers[-1]
 
             # Output layer
-            out_layer = tf.add(tf.matmul(last_layer, weights[-1]), biases[-1])
-            return hidden_layers, out_layer
+            logits = tf.nn.xw_plus_b(last_layer,
+                weights[-1],
+                biases[-1],
+                name='logits')
+
+            return hidden_layers, logits
 
         # Construct model
-        self.hidden_layers, self.out_layer = \
+        self.hidden_layers, self.logits = \
             greedy_graph_builder(self.X, self.weights, self.biases)
 
-        self.cost = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits(self.out_layer, self.Y))
+        dense_golden = BatchedSparseToDense(self.gold_actions, \
+            self.ACTION_COUNT)
+
+        cross_entropy = tf.div(
+            tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
+                self.logits, dense_golden)), batchSize)
+
+        # regularize all parameters except output layer
+        regularized_params = [tf.nn.l2_loss(p) for p in self.weights[:-1]]
+        regularized_params += [tf.nn.l2_loss(p) for p in self.biases[:-1]]
+
+        l2_loss = 1e-4 * tf.add_n(regularized_params) \
+            if regularized_params else 0
+
+        self.cost = tf.add(cross_entropy, l2_loss, name='cost')
+
+        #self.optimizer = tf.train.MomentumOptimizer(
+        #    learning_rate=learningRate, momentum=momentum).minimize(self.cost, \
+        #        global_step=self.global_step)
+
         self.optimizer = tf.train.AdamOptimizer(
-            learning_rate=learningRate).minimize(self.cost)
-        self.pred = tf.nn.softmax(self.out_layer)
+            learning_rate=learningRate).minimize(self.cost, \
+                global_step=self.global_step)
+
+        #self.cost = tf.reduce_mean(
+        #    tf.nn.softmax_cross_entropy_with_logits(self.out_layer, self.Y))
+        #self.optimizer = tf.train.AdagradOptimizer(
+        #    learning_rate=learningRate).minimize(self.cost, \
+        #        global_step=self.global_step)
+
+        # FIXME: to be honest, SyntaxNet doesn't seem to be using softmax
+        # they pass logits as the raw transition scores
+        self.pred = tf.nn.softmax(self.logits)
         self.pred_top_k = tf.nn.top_k(self.pred, k=topK)
 
 
@@ -327,7 +394,7 @@ class Parser(object):
             print_freq = 10
 
             save_freq = 50
-            eval_freq = 200
+            #eval_freq = 200
 
             i = 0
             while(True):
@@ -359,13 +426,17 @@ class Parser(object):
                 
                 tf_batch_x = tf.concat(1, embeddings)
 
-                tf_batch_y = tf.one_hot(indices=tf.constant(gold_actions), \
-                                        depth=self.ACTION_COUNT, on_value=1.0, \
-                                        off_value=0.0, axis=-1)
+                #tf_batch_y = tf.one_hot(indices=tf.constant(gold_actions), \
+                #                        depth=self.ACTION_COUNT, on_value=1.0, \
+                #                        off_value=0.0, axis=-1)
+
+                #dense_golden = BatchedSparseToDense(tf.identity(gold_actions), \
+                #    self.ACTION_COUNT)
 
                 _, c = sess.run([self.optimizer, self.cost], \
                                 feed_dict={self.X: tf_batch_x.eval(),
-                                self.Y: tf_batch_y.eval()})
+                                self.gold_actions: tf.identity(
+                                    gold_actions).eval()})
 
                 # divide by number of actual batch items returned
                 avg_cost += c / len(gold_actions)
@@ -379,10 +450,12 @@ class Parser(object):
                 if i > 0 and i % save_freq == 0:
                     save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
                     self.logger.info('Model saved to file: %s' % save_path)
-                    self.quickEvaluationMetric(sess)
+                    #self.quickEvaluationMetric(sess)
+                    self.attachmentMetric(sess, runs=100, mode='training')
+                    #self.attachmentMetric(sess, runs=100, mode='testing')
 
-                if i > 0 and i % eval_freq == 0:
-                    self.attachmentMetric(sess)
+                #if i > 0 and i % eval_freq == 0:
+                #    self.attachmentMetric(sess, runs=200)
 
                 epoch_num_old = epoch_num
 
@@ -392,17 +465,22 @@ class Parser(object):
     Evaluate a trained model with each token being independent
     and having a gold stack
     '''
-    def quickEvaluationMetric(self, sess):
+    def quickEvaluationMetric(self, sess, mode='testing'):
         batchSize = self.modelParams.cfg['batchSize']
         featureStrings = self.modelParams.cfg['featureStrings']
 
-        #if not self.testingCorpus:
-        self.testingCorpus = ParsedConllFile()
-        self.testingCorpus.read(open(self.modelParams.testingFile, 'r',
+        assert mode == 'testing' or mode == 'training'
+
+        testingCorpus = ParsedConllFile()
+        if mode == 'testing':
+            testingCorpus.read(open(self.modelParams.testingFile, 'r',
+                                     encoding='utf-8').read())
+        elif mode == 'training':
+            testingCorpus.read(open(self.modelParams.trainingFile, 'r',
                                      encoding='utf-8').read())
 
         # Start getting sentence batches...
-        test_reader = GoldParseReader(self.testingCorpus, batchSize, \
+        test_reader = GoldParseReader(testingCorpus, batchSize, \
             featureStrings, self.featureMaps, epoch_print=False)
 
         correctActions = 0
@@ -481,22 +559,29 @@ class Parser(object):
                          (float(correctActions) / float(totalElems))))
 
 
-    def attachmentMetric(self, sess):
-        batchSize = self.modelParams.cfg['batchSize']
+    def attachmentMetric(self, sess, runs=200, mode='testing'):
+        #batchSize = self.modelParams.cfg['batchSize']
+
+        batchSize = 128 # let's try a smaller batch for evaluation
         featureStrings = self.modelParams.cfg['featureStrings']
         topK = self.modelParams.cfg['topK']
 
-        #if not self.testingCorpus:
-        self.testingCorpus = ParsedConllFile()
-        self.testingCorpus.read(open(self.modelParams.testingFile, 'r',
-                                         encoding='utf-8').read())
+        assert mode == 'testing' or mode == 'training'
+
+        testingCorpus = ParsedConllFile()
+        if mode == 'testing':
+            testingCorpus.read(open(self.modelParams.testingFile, 'r',
+                                     encoding='utf-8').read())
+        elif mode == 'training':
+            testingCorpus.read(open(self.modelParams.trainingFile, 'r',
+                                     encoding='utf-8').read())
 
         # evaluate sentence-wide accuracy by UAS and LAS
         # of course, token errors can accumulate and this is why sentence-wide
         # accuracy is lower than token-only accuracy given by quickEvaluationMetric()
 
         # batch size set at one temporarily
-        test_reader_decoded = DecodedParseReader(self.testingCorpus, \
+        test_reader_decoded = DecodedParseReader(testingCorpus, \
             batchSize, featureStrings, self.featureMaps, epoch_print=False)
 
         correctActions = 0
@@ -506,13 +591,15 @@ class Parser(object):
         outputs = []
 
         filled_count = 0
-        pred_top_k_var = []
 
-        test_runs = 200
+        # eventually will be (filled_count, num_actions)
+        logits = np.asarray([])
+
+        test_runs = runs
         for i in range(test_runs):
             logger.debug('Evaluation(batch %d)' % i)
             test_reader_output = test_reader_decoded.nextFeatureBags(
-                pred_top_k_var, filled_count)
+                logits, filled_count)
 
             if test_reader_output[0] == None:
                 logger.critical('Reader error')
@@ -533,8 +620,20 @@ class Parser(object):
             
             tf_batch_x = tf.concat(1, embeddings)
 
-            Y_pred_top_k = sess.run(self.pred_top_k, \
+            #Y_pred_top_k = sess.run(self.pred_top_k, \
+            #    feed_dict={self.X: tf_batch_x.eval()})
+
+            #print(self.logits.get_shape())
+
+            logits = sess.run(self.logits, \
                 feed_dict={self.X: tf_batch_x.eval()})
+
+            #print(type(logits))
+            #print(logits.shape)
+            #logits2 = logits.reshape((filled_count,)
+
+            #Y_pred_top_k = sess.run(self.logits, \
+            #    feed_dict={self.X: tf_batch_x.eval()})
 
             # Y_pred_top_k[0][i]: K top values for token i (descending order)
             #
@@ -548,21 +647,14 @@ class Parser(object):
             # we're interested in indices (indicating our desired action)
 
             # change to major index being sentence
-            pred_top_k_var = []
+            #pred_top_k_var = []
 
-            for m in range(len(Y_pred_top_k[1])):
-                assert len(Y_pred_top_k[1][m]) == topK
-                pred_top_k_var.append(Y_pred_top_k[1][m])
+            #for m in range(len(Y_pred_top_k[1])):
+            #    assert len(Y_pred_top_k[1][m]) == topK
+            #    pred_top_k_var.append(Y_pred_top_k[1][m])
 
             sentences = test_reader_decoded.getNextAnnotations()
             outputs.append(sentences)
-
-        # also print out number of correct actions (even if tag was wrong)
-        #logger.info('Correct actions+arcs: %d/%d, correct actions: %d' % \
-        #    (correctElems, totalElems, correctActions))
-
-        # we need to make sure unseen words get mapped to unknown values when
-        # we use an unseen corpus
 
         token_count = 0
         deprel_correct = 0
@@ -570,10 +662,10 @@ class Parser(object):
         deprel_and_head_correct = 0
 
         for sentences in outputs:
-            print('-'*20)
+            logger.info('-'*20)
             for sentence in sentences:
-                print('-'*20)
-                #print([w for w in sentence.tokens])
+                logger.info('-'*20)
+                #logger.info([w for w in sentence.tokens])
                 for w in sentence.tokens:
                     suffix = ''
 
@@ -612,14 +704,15 @@ class Parser(object):
 
         # errors that accumulate (tokens are tested based on previous decoded
         # decisions, which could screw up shifting and arcing, etc)
-        logger.info('Attachment Error Metric (test_set)')
+        # SyntaxNet uses UAS (HEAD-only) for its evaluation during training!
+        logger.info('Attachment Error Metric (%s_set)' % mode)
         logger.info('Accuracy(UAS): %d/%d (%.2f%%)' % \
             (head_correct, token_count,
             100.0 * float(head_correct) / float(token_count)))
         logger.info('Accuracy(LAS): %d/%d (%.2f%%)' % \
             (deprel_and_head_correct, token_count,
             100.0 * float(deprel_and_head_correct) / float(token_count)))
-        logger.info('Accuracy(DepRel): %d/%d' % \
+        logger.info('Accuracy(DepRel): %d/%d (%.2f%%)' % \
             (deprel_correct, token_count,
             100.0 * float(deprel_correct) / float(token_count)))
 
@@ -637,7 +730,8 @@ exec(configFile, configNamespace)
 
 # TODO: use trainingSteps
 requiredFields = ['trainingSteps', 'learningRate', 'batchSize', 'topK',
-                  'hiddenLayerSizes', 'embeddingSizes', 'featureStrings']
+                  'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
+                  'momentum']
 for field in requiredFields:
     assert configNamespace[field] != None, 'please set %s in config' % field
 

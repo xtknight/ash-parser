@@ -57,76 +57,79 @@ class DecodedParseReader(object):
     '''
     Perform the next best decoded action for each state
 
-    pred_top_k[i]: top k actions (transition action integers) for token state i
+    scores[i][k]: probability of each action k for token state i
+                  as far as I know, raw logits
 
-    filled_count: number of items of pred_top_k filled (if 0, forces SHIFT
-                  for the first time).
-                  otherwise, should be greater than 0 and less than or equal
-                  to batch_size
+    filled_count: number of items of scores filled (if 0, forces SHIFT
+                  for the first time). otherwise, should be greater than 0 an
+                  less than or equal to batch_size
     '''
-    def performActions(self, pred_top_k, filled_count):
-        for i in range(self.batch_size):
-            if self.state(i) != None:
-                #nextGoldAction = \
-                #    self.transition_system.getNextGoldAction(self.state(i))
+    def performActions(self, scores, filled_count):
+        for batch_index in range(self.batch_size):
+            state = self.state(batch_index)
+            if state != None:
+                #nextGoldAction = self.transition_system \
+                #    .getNextGoldAction(state)
 
                 #self.logger.debug('Slot(%d) - Gold action: %s' %
-                #    (i, self.transition_system.actionAsString(
-                #    nextGoldAction, self.state(i), self.feature_maps)))
+                #    (batch_index, self.transition_system.actionAsString(
+                #    nextGoldAction, state, \
+                # self.feature_maps)))
 
                 # default action if none given
                 bestAction = ParserState.SHIFT
+                bestScore = float('-inf')
 
                 # check to make sure decisions are filled for this batch i
-                if filled_count > i:
+                if filled_count > batch_index:
                     # look through top k estimated transition actions and
                     # pick most suitable one
-                    for k in range(len(pred_top_k[i])):
-                        action = pred_top_k[i][k]
-                        if self.transition_system.isAllowedAction(action,
-                                self.state(i)):
-                            self.logger.debug('Slot(%d): action candidate(%d):'
-                                ' %s - allowed' % (i, k, \
+                    for action in range(len(scores[batch_index])):
+                        score = scores[batch_index][action]
+                        if self.transition_system \
+                                .isAllowedAction(action, state):
+                            self.logger.debug('Slot(%d): action candidate:'
+                                ' %s, score=%.8f - allowed' % (batch_index, \
                                 self.transition_system.actionAsString(
-                                    action, self.state(i),
-                                    self.feature_maps)))
+                                    action, state,
+                                    self.feature_maps), score))
+
+                            if score > bestScore:
+                                bestAction = action
+                                bestScore = score
                         else:
-                            self.logger.debug('Slot(%d): action candidate(%d):'
-                                ' %s - unallowed' % (i, k, \
+                            self.logger.debug('Slot(%d): action candidate:'
+                                ' %s, score=%.8f - unallowed' % (batch_index, \
                                 self.transition_system.actionAsString(
-                                    action, self.state(i),
-                                    self.feature_maps)))
+                                    action, state,
+                                    self.feature_maps), score))
 
-                    for k in range(len(pred_top_k[i])):
-                        action = pred_top_k[i][k]
-                        if self.transition_system.isAllowedAction(action,
-                                self.state(i)):
-                            bestAction = action
-                            break
-
-                self.logger.debug('Slot(%d): perform action %s' %
-                    (i, self.transition_system.actionAsString(
-                        bestAction, self.state(i), self.feature_maps)))
+                self.logger.debug('Slot(%d): perform action %s, score=%.8f' %
+                    (batch_index, self.transition_system.actionAsString(
+                        bestAction, state, \
+                        self.feature_maps), bestScore))
 
                 try:
                     self.transition_system.performAction(
-                        bestAction, self.state(i))
+                        bestAction, state)
                 except:
                     self.logger.debug(
-                        'Slot(%d): invalid action at batch slot' % i)
+                        'Slot(%d): invalid action at batch slot' % batch_index)
 
                     self.transition_system.performAction(
                         action=self.transition_system.getDefaultAction(
-                            self.state(i)),
-                        state=self.state(i))
+                            state), state=state)
 
-                if self.transition_system.isFinalState(self.state(i)):
-                    #self.computeTokenAccuracy(self.state(i))
-                    self.sentence_map_[self.state(i).sentence().docid()] = \
-                        self.state(i).sentence()
-                    self.logger.debug('Slot(%d): final state reached' % i)
-                    self.addParseToDocument(self.state(i), True, \
-                        self.sentence_map_[self.state(i).sentence().docid()])
+                if self.transition_system.isFinalState(state):
+                    #self.computeTokenAccuracy(state)
+                    self.sentence_map_ \
+                        [state.sentence().docid()] = state.sentence()
+
+                    self.logger.debug('Slot(%d): final state reached' \
+                        % batch_index)
+
+                    self.addParseToDocument(state, True, \
+                        self.sentence_map_[state.sentence().docid()])
 
     '''
     Concatenate and return feature bags for all sentence slots, grouped
@@ -134,8 +137,8 @@ class DecodedParseReader(object):
 
     Returns (None, None, None, ...) if no sentences left
     '''
-    def nextFeatureBags(self, pred_top_k, filled_count):
-        self.performActions(pred_top_k, filled_count)
+    def nextFeatureBags(self, scores, filled_count):
+        self.performActions(scores, filled_count)
 
         for i in range(self.batch_size):
             if self.state(i) == None:
