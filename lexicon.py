@@ -5,6 +5,7 @@ along with unknown tokens.
 The lexicon is typically computed during training time.
 '''
 
+from utils import *
 from conll_utils import ParsedConllFile, ParsedConllSentence, ParsedConllToken
 from feature_map import IndexEncodedFeatureMap
 
@@ -28,9 +29,13 @@ class Lexicon(object):
                           encoding='utf-8').read())
         for sentence in trainingData:
             for token in sentence.tokens:
-                # digit normalization is performed in corpus itself
-                # as long as we use the ParsedConllFile() class
-                self.wordMap.incrementTerm(token.FORM)
+                # for SyntaxNet,
+                # normalization ONLY happens in lexicon builder
+                # yet numbers and up as <UNKNOWN> during training
+                # interesting...
+                form = normalizeDigits(token.FORM)
+
+                self.wordMap.incrementTerm(form)
                 self.tagMap.incrementTerm(token.XPOSTAG)
                 self.labelMap.incrementTerm(token.DEPREL)
         

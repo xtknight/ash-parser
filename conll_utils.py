@@ -8,7 +8,7 @@ the parsing process that are external to the Conll instances themselves
 '''
 
 import logging
-from utils import *
+#from utils import *
 
 def encodeNoneAsUnderscore(s):
     if s == None:
@@ -228,13 +228,18 @@ class ConllFile(object):
             else:
                 current_token = ConllToken()
 
+            #if self.parsed:
+            #    current_token.FORM = normalizeDigits(cols[1])
+            #else:
+            #    current_token.FORM = cols[1]
+
+            # for SyntaxNet,
+            # normalization ONLY happens in lexicon builder
+            # yet numbers and up as <UNKNOWN> during training
+            # interesting...
+
             # let this be underscore if needed (don't call processUnderscore())
-            if self.parsed:
-                # like SyntaxNet, we need to normalize the corpus digits
-                # easiest just to do it from the beginning
-                current_token.FORM = normalizeDigits(cols[1])
-            else:
-                current_token.FORM = cols[1]
+            current_token.FORM = cols[1]
 
             if len(cols) > 2 and (3 not in excludeCols):
                 # let this be underscore if needed

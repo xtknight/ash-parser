@@ -422,22 +422,7 @@ class SparseFeatureExtractor(object):
                                     (feature_name, feature_index, '<UNKNOWN>'))
                 elif fname == 'tag':
                     feature_major_type = 'tag'
-                    if focus.val == -1:
-                        # tag is based on BasicParserSentenceFeatureFunction
-                        # the exceptional case for -1 happens in
-                        # parser_features.h
-
-                        # BasicParserSentenceFeatureFunction::Compute
-                        # the strange thing is that in SyntaxNet, the 'word'
-                        # feature takes on <OUTSIDE> instead of <ROOT> when
-                        # processing the <ROOT> token.
-                        feature_index = self.feature_maps[feature_major_type] \
-                            .valueToIndex('<ROOT>')
-
-                        if doLogging:
-                            self.logger.debug('%s: %d (%s)' % (feature_name, \
-                                feature_index, '<ROOT>'))
-                    elif focus.val < -1 or focus.val >= parser.numTokens():
+                    if focus.val < 0 or focus.val >= parser.numTokens():
                         feature_index = self.feature_maps[feature_major_type] \
                             .valueToIndex('<OUTSIDE>')
 
