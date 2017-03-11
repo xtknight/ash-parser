@@ -5,7 +5,7 @@ along with unknown tokens.
 The lexicon is typically computed during training time.
 '''
 
-from conll_utils import ConllFile, ConllSentence, ConllToken
+from conll_utils import ParsedConllFile, ParsedConllSentence, ParsedConllToken
 from feature_map import IndexEncodedFeatureMap
 
 class Lexicon(object):
@@ -23,11 +23,13 @@ class Lexicon(object):
     Compute a lexicon (using the training data)
     '''
     def compute(self):
-        trainingData = ConllFile()
+        trainingData = ParsedConllFile()
         trainingData.read(open(self.modelParams.trainingFile, 'r',
                           encoding='utf-8').read())
         for sentence in trainingData:
             for token in sentence.tokens:
+                # digit normalization is performed in corpus itself
+                # as long as we use the ParsedConllFile() class
                 self.wordMap.incrementTerm(token.FORM)
                 self.tagMap.incrementTerm(token.XPOSTAG)
                 self.labelMap.incrementTerm(token.DEPREL)
@@ -60,8 +62,7 @@ class Lexicon(object):
         self.tagMap.finalizeBaseValues()
         self.labelMap.finalizeBaseValues()
 
-        self.tagMap.appendSpecialValue("<ROOT>")
-        self.labelMap.appendSpecialValue("<ROOT>")
+        # order of special tokens matches SyntaxNet
 
         self.wordMap.appendSpecialValue("<UNKNOWN>")
         self.tagMap.appendSpecialValue("<UNKNOWN>")
@@ -70,6 +71,9 @@ class Lexicon(object):
         self.wordMap.appendSpecialValue("<OUTSIDE>")
         self.tagMap.appendSpecialValue("<OUTSIDE>")
         self.labelMap.appendSpecialValue("<OUTSIDE>")
+
+        self.tagMap.appendSpecialValue("<ROOT>")
+        self.labelMap.appendSpecialValue("<ROOT>")
 
         self.featureMaps = {'word': self.wordMap, 'tag': self.tagMap,
                             'label': self.labelMap}

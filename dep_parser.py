@@ -15,6 +15,7 @@ import argparse
 
 from model_parameters import *
 from lexicon import *
+from utils import *
 from conll_utils import *
 from feature_extractor import SparseFeatureExtractor
 from parser_state import ParserState
@@ -87,6 +88,7 @@ def BatchedSparseToDense(sparse_indices, output_size):
     return tf.nn.embedding_lookup(eye, sparse_indices)
 
 
+
 '''
 Entry point for dependency parser
 '''
@@ -136,7 +138,8 @@ class Parser(object):
         # state and extracting features, and then concatenating the similar
         # types
         fvec = SparseFeatureExtractor(featureStrings, self.featureMaps) \
-            .extract(ParserState(ConllSentence(), self.featureMaps))
+            .extract(ParserState(ParsedConllSentence(docid=None),
+                     self.featureMaps), doLogging=False)
 
         featureTypeInstances = fvec.types
         self.featureMajorTypeGroups, _ = fvec.concatenateSimilarTypes()
@@ -232,18 +235,8 @@ class Parser(object):
         # Bag of features at each parser state
         self.X = tf.placeholder(tf.float32, [None, self.BAG_OF_FEATURES_LEN], \
             name="ph_X")
-
-        # Next action to take for given input parser state
-        # (One-hot encoding)
-        # SHIFT, LEFT_ARC(L), or RIGHT_ARC(L)
-        # Output: (, 3+~50)
-        #self.gold_actions = tf.placeholder(tf.int32, \
-        #    [None, self.ACTION_COUNT], name="ph_gold_actions")
-        #self.gold_actions = tf.placeholder(tf.int32, \
-        #    [None, self.ACTION_COUNT], name="ph_gold_actions")
-
-        self.gold_actions = tf.placeholder(tf.int32, \
-            [None], name="ph_gold_actions")
+        self.gold_actions = tf.placeholder(tf.int32, [None], \
+            name="ph_gold_actions")
 
         self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
@@ -275,7 +268,7 @@ class Parser(object):
                 initializer=tf.random_normal_initializer(stddev=1e-4, seed=0)))
 
             self.biases.append(tf.get_variable("biases", \
-                [self.ACTION_COUNT], initializer=tf.zeros_initializer))
+                [self.ACTION_COUNT], initializer=tf.zeros_initializer()))
 
             #
             #self.biases.append(tf.get_variable("biases", \
@@ -315,12 +308,19 @@ class Parser(object):
         self.hidden_layers, self.logits = \
             greedy_graph_builder(self.X, self.weights, self.biases)
 
+        #self.gold_actions = tf.Print(self.gold_actions, [self.gold_actions], message="gold_actions: ", summarize=40)
+
+        #print('gold_actions:', self.gold_actions)
+
         dense_golden = BatchedSparseToDense(self.gold_actions, \
             self.ACTION_COUNT)
 
+        print('self.logits shape:', self.logits.get_shape())
+        print('dense_golden shape:', dense_golden.get_shape())
+
         cross_entropy = tf.div(
             tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
-                self.logits, dense_golden)), batchSize)
+                logits=self.logits, labels=dense_golden)), batchSize)
 
         # regularize all parameters except output layer
         regularized_params = [tf.nn.l2_loss(p) for p in self.weights[:-1]]
@@ -331,13 +331,13 @@ class Parser(object):
 
         self.cost = tf.add(cross_entropy, l2_loss, name='cost')
 
-        #self.optimizer = tf.train.MomentumOptimizer(
-        #    learning_rate=learningRate, momentum=momentum).minimize(self.cost, \
-        #        global_step=self.global_step)
+        self.optimizer = tf.train.MomentumOptimizer(
+            learning_rate=learningRate, momentum=momentum) \
+                .minimize(self.cost, global_step=self.global_step)
 
-        self.optimizer = tf.train.AdamOptimizer(
-            learning_rate=learningRate).minimize(self.cost, \
-                global_step=self.global_step)
+        #self.optimizer = tf.train.AdamOptimizer(
+        #    learning_rate=learningRate).minimize(self.cost, \
+        #        global_step=self.global_step)
 
         #self.cost = tf.reduce_mean(
         #    tf.nn.softmax_cross_entropy_with_logits(self.out_layer, self.Y))
@@ -413,10 +413,14 @@ class Parser(object):
                 features_major_types, features_output, gold_actions, \
                     epoch_num = reader_output
 
+                print('gold_actions:', gold_actions[:40])
+
                 embeddings = []
 
                 # order of features will match the order of our arrays above
                 for k in range(len(features_output)):
+                    print('ids:', k, features_output[k][:256])
+
                     embeddings.append(tf.nn.embedding_lookup(
                         self.featureEmbeddings[k], features_output[k]))
 
@@ -424,19 +428,21 @@ class Parser(object):
                         [-1, len(self.featureNames[k]) * \
                         self.featureEmbeddingSizes[k]])
                 
-                tf_batch_x = tf.concat(1, embeddings)
+                tf_batch_x = tf.concat(axis=1, values=embeddings)
 
                 #tf_batch_y = tf.one_hot(indices=tf.constant(gold_actions), \
-                #                        depth=self.ACTION_COUNT, on_value=1.0, \
-                #                        off_value=0.0, axis=-1)
+                #    depth=self.ACTION_COUNT, on_value=1.0, \
+                #    off_value=0.0, axis=-1)
 
-                #dense_golden = BatchedSparseToDense(tf.identity(gold_actions), \
-                #    self.ACTION_COUNT)
+                #dense_golden = BatchedSparseToDense( \
+                # tf.identity(gold_actions), self.ACTION_COUNT)
+
+                #self.gold_actions = tf.identity(tf.constant(gold_actions), \
+                #    name="gold_actions")
 
                 _, c = sess.run([self.optimizer, self.cost], \
                                 feed_dict={self.X: tf_batch_x.eval(),
-                                self.gold_actions: tf.identity(
-                                    gold_actions).eval()})
+                                           self.gold_actions: gold_actions})
 
                 # divide by number of actual batch items returned
                 avg_cost += c / len(gold_actions)
@@ -444,13 +450,13 @@ class Parser(object):
                 if i > 0 and i % print_freq == 0:
                     self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
                         (epoch_num, i+1, "{:.9e}".format(avg_cost)))
+                    self.quickEvaluationMetric(sess, mode='training')
                     # reset avg
                     avg_cost = 0.0
 
                 if i > 0 and i % save_freq == 0:
                     save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
                     self.logger.info('Model saved to file: %s' % save_path)
-                    #self.quickEvaluationMetric(sess)
                     self.attachmentMetric(sess, runs=100, mode='training')
                     #self.attachmentMetric(sess, runs=100, mode='testing')
 
@@ -508,7 +514,7 @@ class Parser(object):
                     [-1, len(self.featureNames[k]) * \
                     self.featureEmbeddingSizes[k]])
             
-            tf_batch_x = tf.concat(1, embeddings)
+            tf_batch_x = tf.concat(axis=1, values=embeddings)
 
             Y_actual = tf.one_hot(indices=tf.constant(gold_actions), \
                 depth=self.ACTION_COUNT, on_value=1.0, off_value=0.0, \
@@ -550,7 +556,7 @@ class Parser(object):
         # also print out number of correct actions (even if tag was wrong)
         # errors that don't accumulate (tokens are tested individually with
         # gold stack)
-        self.logger.info('Gold Stack Error Metric (test_set)')
+        self.logger.info('Gold Stack Error Metric (%s_set)' % mode)
         self.logger.info('Actions+Labels: %d/%d (%.2f%%), '
                          'Actions: %d/%d (%.2f%%)' % \
                          (correctElems, totalElems, 100.0 * \
@@ -578,7 +584,8 @@ class Parser(object):
 
         # evaluate sentence-wide accuracy by UAS and LAS
         # of course, token errors can accumulate and this is why sentence-wide
-        # accuracy is lower than token-only accuracy given by quickEvaluationMetric()
+        # accuracy is lower than token-only accuracy given by
+        # quickEvaluationMetric()
 
         # batch size set at one temporarily
         test_reader_decoded = DecodedParseReader(testingCorpus, \
@@ -618,7 +625,7 @@ class Parser(object):
                     [-1, len(self.featureNames[k]) * \
                          self.featureEmbeddingSizes[k]])
             
-            tf_batch_x = tf.concat(1, embeddings)
+            tf_batch_x = tf.concat(axis=1, values=embeddings)
 
             #Y_pred_top_k = sess.run(self.pred_top_k, \
             #    feed_dict={self.X: tf_batch_x.eval()})

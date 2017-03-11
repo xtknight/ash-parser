@@ -120,11 +120,12 @@ Arguments: args[0]: get n'th child (< 0 indicates leftmost, > 0 indicates
 rightmost)
 '''
 class ChildFeatureLocator(ParserIndexLocator):
-    def __init__(self, parser, args):
+    def __init__(self, parser, args, doLogging=True):
         super().__init__(parser)
         assert len(args) == 1
         assert type(args[0]) is int
         self.args = args
+        self.doLogging = doLogging
 
     def updateArgs(self, focus):
         levels = self.args[0]
@@ -132,30 +133,34 @@ class ChildFeatureLocator(ParserIndexLocator):
 
         # same logic as SyntaxNet
         if (focus.val < -1) or (focus.val >= self.parser.numTokens()):
-            logger.debug('ChildFeatureLocator: focus=-2')
+            if self.doLogging:
+                logger.debug('ChildFeatureLocator: focus=-2')
             focus.val = -2
             return
 
         oldfocus = focus.val
         if (levels < 0):
             focus.val = self.parser.leftmostChild(focus.val, -levels)
-            logger.debug('ChildFeatureLocator: leftmostChild: levels=%d, '
-                'focus=%d->%d' % (levels, oldfocus, focus.val))
+            if self.doLogging:
+                logger.debug('ChildFeatureLocator: leftmostChild: levels=%d, '
+                    'focus=%d->%d' % (levels, oldfocus, focus.val))
         else:
             focus.val = self.parser.rightmostChild(focus.val, levels)
-            logger.debug('ChildFeatureLocator: rightmostChild: levels=%d, '
-                'focus=%d->%d' % (levels, oldfocus, focus.val))
+            if self.doLogging:
+                logger.debug('ChildFeatureLocator: rightmostChild: levels=%d, '
+                    'focus=%d->%d' % (levels, oldfocus, focus.val))
 
 '''
 Arguments: args[0]: get n'th sibling (< 0 indicates to left, > 0 indicates to
 right)
 '''
 class SiblingFeatureLocator(ParserIndexLocator):
-    def __init__(self, parser, args):
+    def __init__(self, parser, args, doLogging=True):
         super().__init__(parser)
         assert len(args) == 1
         assert type(args[0]) is int
         self.args = args
+        self.doLogging = doLogging
 
     def updateArgs(self, focus):
         position = self.args[0]
@@ -163,19 +168,24 @@ class SiblingFeatureLocator(ParserIndexLocator):
 
         # same logic as SyntaxNet
         if (focus.val < -1) or (focus.val >= self.parser.numTokens()):
-            logger.debug('SiblingFeatureLocator: focus=-2')
+            if self.doLogging:
+                logger.debug('SiblingFeatureLocator: focus=-2')
             focus.val = -2
             return
 
         oldfocus = focus.val
         if (position < 0):
             focus.val = self.parser.leftSibling(focus.val, -position)
-            logger.debug('SiblingFeatureLocator: leftSibling: position=%d, '
-                'focus=%d->%d' % (position, oldfocus, focus.val))
+            if self.doLogging:
+                logger.debug('SiblingFeatureLocator: leftSibling: ' \
+                    'position=%d, ' \
+                    'focus=%d->%d' % (position, oldfocus, focus.val))
         else:
             focus.val = self.parser.rightSibling(focus.val, position)
-            logger.debug('SiblingFeatureLocator: rightSibling: position=%d, '
-                'focus=%d->%d' % (position, oldfocus, focus.val))
+            if self.doLogging:
+                logger.debug('SiblingFeatureLocator: rightSibling: ' \
+                    'position=%d, ' \
+                    'focus=%d->%d' % (position, oldfocus, focus.val))
 
 '''
 Decodes a feature separated between a dot value into a feature name and argument
@@ -263,18 +273,23 @@ class SparseFeatureExtractor(object):
         self.feature_maps = feature_maps
         self.logger = logging.getLogger('SparseFeatureExtractor')
 
-    def extract(self, parser):
+    '''
+    doLogging=False: don't log if we're just in init mode where we determine
+                     major feature types during initialization, etc...
+    '''
+    def extract(self, parser, doLogging=True):
         fvec = FeatureVector()
         for fstr in self.feature_strings:
-            ftype, fval = self.extractOne(parser, fstr)
+            ftype, fval = self.extractOne(parser, fstr, doLogging=doLogging)
             fvec.types.append(ftype)
             fvec.values.append(fval)
         return fvec
 
     '''
     featureString: stack(1).child(-1).sibling(1).word
+    doLogging=False: don't log if we're just in init mode
     '''
-    def extractOne(self, parser, featureString):
+    def extractOne(self, parser, featureString, doLogging=True):
         featureParts = featureString.split('.')
 
         # must reference at least one focus and at least one feature
@@ -318,19 +333,22 @@ class SparseFeatureExtractor(object):
                 assert focus != None, 'can\'t take CHILD of null focus'
                 assert feature_index == None, \
                     'can\'t update focus if feature is already set'
-                ChildFeatureLocator(parser, fargs).updateArgs(focus)
+                ChildFeatureLocator(parser, fargs, \
+                    doLogging=doLogging).updateArgs(focus)
             elif fname == 'sibling':
                 assert focus != None, 'can\'t take SIBLING of null focus'
                 assert feature_index == None, \
                     'can\'t update focus if feature is already set'
-                SiblingFeatureLocator(parser, fargs).updateArgs(focus)
+                SiblingFeatureLocator(parser, fargs, \
+                    doLogging=doLogging).updateArgs(focus)
             else:
                 assert focus != None, 'can\'t request feature of null focus'
                 assert feature_index == None, \
                     'can\'t request feature when feature is already set; ' \
                         'nested features not supported'
 
-                self.logger.debug('focus.val: %d' % focus.val)
+                if doLogging:
+                    self.logger.debug('focus.val: %d' % focus.val)
 
                 if fname == 'label':
                     feature_major_type = 'label'
@@ -339,15 +357,18 @@ class SparseFeatureExtractor(object):
                             self.feature_maps[feature_major_type] \
                                 .valueToIndex('<ROOT>')
 
-                        self.logger.debug('%s: %d (%s)' % \
-                            (feature_name, feature_index, '<ROOT>'))
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<ROOT>'))
 
                     elif focus.val < -1 or focus.val >= parser.numTokens():
                         feature_index = \
                             self.feature_maps[feature_major_type] \
                                 .valueToIndex('<OUTSIDE>')
-                        self.logger.debug('%s: %d (%s)' % \
-                            (feature_name, feature_index, '<OUTSIDE>'))
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<OUTSIDE>'))
 
                     else:
                         # pulls label from parser itself, which means it won't
@@ -359,14 +380,16 @@ class SparseFeatureExtractor(object):
                             feature_index = \
                                 self.feature_maps[feature_major_type] \
                                     .valueToIndex('<ROOT>')
-                            self.logger.debug('%s: %d (%s)' % \
-                                (feature_name, feature_index, '<ROOT>'))
 
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<ROOT>'))
                         else:
-                            self.logger.debug('%s: %d (%s)' % \
-                                (feature_name, feature_index, \
-                                self.feature_maps[feature_major_type] \
-                                    .indexToValue(parser.label(focus.val))))
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, \
+                                    self.feature_maps[feature_major_type] \
+                                        .indexToValue(parser.label(focus.val))))
 
                 elif fname == 'word':
                     feature_major_type = 'word'
@@ -374,23 +397,29 @@ class SparseFeatureExtractor(object):
                         feature_index = \
                             self.feature_maps[feature_major_type] \
                                 .valueToIndex('<OUTSIDE>')
-                        self.logger.debug('%s: %d (%s)' % \
-                            (feature_name, feature_index, '<OUTSIDE>'))
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<OUTSIDE>'))
                     else:
                         try:
                             feature_index = \
                                 self.feature_maps[feature_major_type] \
                                     .valueToIndex(parser.getToken(
                                         focus.val).FORM)
-                            self.logger.debug('%s: %d (%s)' % \
-                                (feature_name, feature_index, \
-                                parser.getToken(focus.val).FORM))
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, \
+                                    parser.getToken(focus.val).FORM))
                         except: # Out of Vocabulary
                             feature_index = \
                                 self.feature_maps[feature_major_type] \
                                     .valueToIndex('<UNKNOWN>')
-                            self.logger.debug('%s: %d (%s)' % (feature_name, \
-                                feature_index, '<UNKNOWN>'))
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<UNKNOWN>'))
                 elif fname == 'tag':
                     feature_major_type = 'tag'
                     if focus.val == -1:
@@ -404,28 +433,36 @@ class SparseFeatureExtractor(object):
                         # processing the <ROOT> token.
                         feature_index = self.feature_maps[feature_major_type] \
                             .valueToIndex('<ROOT>')
-                        self.logger.debug('%s: %d (%s)' % (feature_name, \
-                            feature_index, '<ROOT>'))
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % (feature_name, \
+                                feature_index, '<ROOT>'))
                     elif focus.val < -1 or focus.val >= parser.numTokens():
                         feature_index = self.feature_maps[feature_major_type] \
                             .valueToIndex('<OUTSIDE>')
-                        self.logger.debug('%s: %d (%s)' % (feature_name, \
-                            feature_index, '<OUTSIDE>'))
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % (feature_name, \
+                                feature_index, '<OUTSIDE>'))
                     else:
                         try:
                             feature_index = \
                                 self.feature_maps[feature_major_type] \
                                     .valueToIndex(parser.getToken(
                                         focus.val).XPOSTAG)
-                            self.logger.debug('%s: %d (%s)' % (feature_name, \
-                                feature_index,
-                                parser.getToken(focus.val).XPOSTAG))
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index,
+                                    parser.getToken(focus.val).XPOSTAG))
                         except: # Out of Vocabulary
                             feature_index = \
                                 self.feature_maps[feature_major_type] \
                                     .valueToIndex('<UNKNOWN>')
-                            self.logger.debug('%s: %d (%s)' % (feature_name, \
-                                feature_index, '<UNKNOWN>'))
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<UNKNOWN>'))
                 else:
                     assert None, 'unknown feature name \'' + fname + '\''
 

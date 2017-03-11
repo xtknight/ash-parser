@@ -1,6 +1,6 @@
 # Translation of arc_standard_transitions.cc from SyntaxNet
 
-from conll_utils import ConllSentence, ConllToken
+from conll_utils import ParsedConllSentence, ParsedConllToken
 from parser_state import ParserState
 
 class ArcStandardTransitionState(object):
