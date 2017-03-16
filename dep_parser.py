@@ -14,6 +14,7 @@ import sys
 import os
 import argparse
 import json
+import random
 #import cProfile
 
 from model_parameters import *
@@ -54,6 +55,8 @@ parser.add_argument('--restart', action='store_true', default=False,
 parser.add_argument('--epochs', type=int, default=10,
                     help='Number of epochs to run (run-throughs over all '
                          'training corpus feature bags). Default 10')
+parser.add_argument('--scoring-strategy', type=str, default='default',
+                    help='Choices: "default", "conllx", "ignore_parens"')
 #parser.add_argument('--feature-bag', type=str,
 #                    help='Specify pre-created feature bag file to save' \
 #                         ' computation time (saved in model dir by default')
@@ -84,6 +87,11 @@ if (args.train and args.evaluate) or ((not args.train) and (not args.evaluate)):
           '(--train/--evaluate)')
     sys.exit(1)
 
+if not (args.scoring_strategy == 'default' or \
+        args.scoring_strategy == 'conllx' or \
+        args.scoring_strategy == 'ignore_parens'):
+    print('Unknown scoring strategy "%s"' % args.scoring_strategy)
+    sys.exit(1)
 
 def batchedSparseToDense(sparse_indices, output_size):
     """Batch compatible sparse to dense conversion.
@@ -101,39 +109,43 @@ def batchedSparseToDense(sparse_indices, output_size):
     return tf.nn.embedding_lookup(eye, sparse_indices)
 
 def embeddingLookupFeatures(params, ids):
-  """Computes embeddings for each entry of sparse features sparse_features.
+    """Computes embeddings for each entry of sparse features sparse_features.
 
-  Args:
-    params: list of 2D tensors containing vector embeddings
-    sparse_features: 1D tensor of strings. Each entry is a string encoding of
-      dist_belief.SparseFeatures, and represents a variable length list of
-      feature ids, and optionally, corresponding weights values.
-    allow_weights: boolean to control whether the weights returned from the
-      SparseFeatures are used to multiply the embeddings.
+    Args:
+      params: list of 2D tensors containing vector embeddings
+      sparse_features: 1D tensor of strings. Each entry is a string encoding of
+        dist_belief.SparseFeatures, and represents a variable length list of
+        feature ids, and optionally, corresponding weights values.
+      allow_weights: boolean to control whether the weights returned from the
+        SparseFeatures are used to multiply the embeddings.
 
-  Returns:
-    A tensor representing the combined embeddings for the sparse features.
-    For each entry s in sparse_features, the function looks up the embeddings
-    for each id and sums them into a single tensor weighing them by the
-    weight of each id. It returns a tensor with each entry of sparse_features
-    replaced by this combined embedding.
-  """
-  #params = tensorDumpValsAllIter(params, [params], '/tmp/ash_params')
+    Returns:
+      A tensor representing the combined embeddings for the sparse features.
+      For each entry s in sparse_features, the function looks up the embeddings
+      for each id and sums them into a single tensor weighing them by the
+      weight of each id. It returns a tensor with each entry of sparse_features
+      replaced by this combined embedding.
+    """
+    #params = tensorDumpValsAllIter(params, [params], '/tmp/ash_params')
 
-  if not isinstance(params, list):
-    params = [params]
+    if not isinstance(params, list):
+      params = [params]
 
-  # Lookup embeddings.
-  embeddings = tf.nn.embedding_lookup(params, ids)
-  '''
-  embeddings.shape (6144, 32)
-  embeddings.shape (10240, 32)
-  embeddings.shape (10240, 64)
-  '''
-  #embeddings = tensorDumpValsAllIter(embeddings, [embeddings],
-  #    '/tmp/ash_embeddings')
-  return embeddings
+    # Lookup embeddings.
+    embeddings = tf.nn.embedding_lookup(params, ids)
+    '''
+    embeddings.shape (6144, 32)
+    embeddings.shape (10240, 32)
+    embeddings.shape (10240, 64)
+    '''
+    #embeddings = tensorDumpValsAllIter(embeddings, [embeddings],
+    #    '/tmp/ash_embeddings')
+    return embeddings
 
+'''
+Takes an SHA-1 hash of a file
+(Useful for hashing training corpus)
+'''
 def fileHash(fname):
     fd = open(fname, 'rb')
     retval = hashlib.sha1(fd.read()).hexdigest()
@@ -378,7 +390,7 @@ class Parser(object):
             return_average = False
             nodes = self.training
         else:
-            return_average = True
+            return_average = self.use_averaging
             nodes = self.evaluation
 
         learningRate = self.modelParams.cfg['learningRate']
@@ -399,7 +411,7 @@ class Parser(object):
                 major_type = self.featureMajorTypeGroups[i]
                 # it will be number of features*batch size number of sparse integers (ids)
                 nodes['feature_endpoints'].append(tf.placeholder(tf.int32, \
-                    [batchSize * len(self.featureNames[i])],
+                    [None, len(self.featureNames[i])],
                     name="ph_feature_endpoints_%s" % major_type))
                 embeddings.append(self.addEmbedding(nodes['feature_endpoints'][i],
                                             len(self.featureNames[i]),
@@ -458,15 +470,17 @@ class Parser(object):
 
             if mode == 'train':
                 nodes['gold_actions'] = tf.placeholder(tf.int32, [None], \
-                    name="ph_gold_actions")
+                    name='ph_gold_actions')
+                nodes['filled_slots'] = tf.placeholder(tf.int32, \
+                    name='ph_filled_slots')
 
                 dense_golden = batchedSparseToDense(nodes['gold_actions'], \
                     self.ACTION_COUNT)
 
-                # FIXME: rather than batchSize, might be filled_slots
                 cross_entropy = tf.div(
                     tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
-                        logits=logits, labels=dense_golden)), batchSize)
+                            logits=logits, labels=dense_golden)),
+                        tf.cast(nodes['filled_slots'], tf.float32))
 
                 # cross_entropy = tf.Print(cross_entropy, [cross_entropy], message='cross_entropy')
 
@@ -519,131 +533,6 @@ class Parser(object):
                 #writer = tf.summary.FileWriter(self.modelParams.modelFolder, \
                 #    graph=tf.get_default_graph())
 
-
-    '''
-    Start training from scratch, or from where we left off
-    '''
-    def startTraining(self, sess):
-        batchSize = self.modelParams.cfg['batchSize']
-        featureStrings = self.modelParams.cfg['featureStrings']
-
-        self.trainingCorpus = ParsedConllFile()
-        self.trainingCorpus.read(open(self.modelParams.trainingFile, 'r',
-                          encoding='utf-8').read())
-
-        # Start getting sentence batches...
-        reader = GoldParseReader(self.trainingCorpus, batchSize, \
-            featureStrings, self.featureMaps)
-
-        epoch_num_old = 0
-        #avg_cost = 0.0
-
-        ckpt_dir = fixPath(self.modelParams.modelFolder) + '/'
-
-        saver = tf.train.Saver()
-
-        #with tf.device('/gpu:0'):
-        #sess.run(init_op)
-
-        ckpt = tf.train.get_checkpoint_state(ckpt_dir)
-        if ckpt and ckpt.model_checkpoint_path:
-            # Restore variables from disk.
-            saver.restore(sess, ckpt.model_checkpoint_path)
-            self.logger.info('Model restored')
-            self.logger.info('Continue fitting')
-
-        # every 10 batches, reset avg and print
-        print_freq = 10
-
-        save_freq = 50
-        #eval_freq = 200
-
-        i = 0
-        while(True):
-            self.logger.debug('Iter(%d): nextFeatureBags()' % i)
-            reader_output = reader.nextFeatureBags()
-            if reader_output[0] == None:
-                self.logger.debug('Iter(%d): reader output is None' % i)
-                break
-
-            '''
-                epoch_num refers to the number of run-throughs through the
-                whole training corpus, whereas `i` is just the batch
-                iteration number
-            '''
-
-            features_major_types, features_output, gold_actions, \
-                epoch_num = reader_output
-
-            #print('gold_action_len: %d' % len(gold_actions))
-
-            filled_count = len(gold_actions)
-            if filled_count < batchSize:
-                # restart from beginning
-                # Start getting sentence batches...
-                #reader = GoldParseReader(self.trainingCorpus, batchSize, \
-                #    featureStrings, self.featureMaps)
-                # FIXME: need to allow variable input
-                # otherwise, this just keeps on going
-                self.attachmentMetric(sess, runs=100, mode='training')
-                continue
-            
-            #print('feature(0) len: %d' % len(features_output[0]))
-            #print('feature(1) len: %d' % len(features_output[1]))
-            #print('feature(2) len: %d' % len(features_output[2]))
-
-            # FIXME: what if length is less than batch size? need padding
-
-            #sys.exit(1)
-
-            # debug: print out first 40 actions (useful to compare with
-            #        SyntaxNet)
-            self.logger.debug('gold_actions: %s' % \
-                str(gold_actions[:40]))
-
-            assert len(self.training['feature_endpoints']) == len(features_output)
-
-            feed_dict = {}
-            for k in range(len(self.training['feature_endpoints'])):
-                feed_dict[self.training['feature_endpoints'][k]] = \
-                    features_output[k]
-            feed_dict[self.training['gold_actions']] = gold_actions
-
-            #run_metadata = tf.RunMetadata()
-            c, _ = sess.run([self.training['cost'], self.training['train_op']],
-                            feed_dict=feed_dict)
-            #,
-            #                options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-            #                run_metadata=run_metadata)
-            #from tensorflow.python.client import timeline
-            #trace = timeline.Timeline(step_stats=run_metadata.step_stats)
-            #trace_file = open('timeline.ctf.json', 'w')
-            #trace_file.write(trace.generate_chrome_trace_format())
-
-
-            # divide cost by number of actual batch items returned
-            #avg_cost += c / len(gold_actions)
-            #avg_cost += c
-            
-            if i > 0 and i % print_freq == 0:
-                self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
-                    (epoch_num, i+1, "{:.2f}".format(c)))
-                #self.quickEvaluationMetric(sess, mode='training')
-                # reset avg
-                #avg_cost = 0.0
-
-            if i > 0 and i % save_freq == 0:
-                save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
-                self.logger.info('Model saved to file: %s' % save_path)
-                #self.attachmentMetric(sess, runs=100, mode='training')
-                #self.attachmentMetric(sess, runs=100, mode='testing')
-
-            #if i > 0 and i % eval_freq == 0:
-            #    self.attachmentMetric(sess, runs=200)
-
-            epoch_num_old = epoch_num
-
-            i += 1
 
     '''
     Serialize the feature definitions
@@ -764,7 +653,7 @@ class Parser(object):
     '''
     Start training from scratch, or from where we left off
     '''
-    def startTrainingOpt(self, sess, epochs_to_run=10, restart=False):
+    def startTraining(self, sess, epochs_to_run=10, restart=False):
         batchSize = self.modelParams.cfg['batchSize']
         featureStrings = self.modelParams.cfg['featureStrings']
 
@@ -783,38 +672,12 @@ class Parser(object):
             else:
                 self.logger.info('Start fitting')
 
-        # every 10 batches, reset avg and print
         print_freq = 10
 
-        save_freq = 50
+        save_freq = 500
         #eval_freq = 200
 
         batches = self.obtainFeatureBags(self.modelParams.trainingFile)
-
-        '''
-        batches = []
-
-        i = 0
-        while(True):
-            self.logger.info('Iter(%d): nextFeatureBags()' % i)
-            reader_output = reader.nextFeatureBags()
-            if reader_output[0] == None:
-                self.logger.debug('Iter(%d): reader output is None' % i)
-                break
-
-            features_major_types, features_output, gold_actions, \
-                epoch_num = reader_output
-
-            if epoch_num > 1:
-                # don't make more than one epoch
-                break
-
-            batches.append(reader_output)
-            i += 1
-
-            #if i > 5000: # that's enough batches
-            #    break
-        '''
 
         epoch_num = 0
 
@@ -835,51 +698,42 @@ class Parser(object):
                 features_major_types, features_output, gold_actions, \
                     _ = reader_output
 
-                #print('gold_action_len: %d' % len(gold_actions))
-
                 filled_count = len(gold_actions)
                 if filled_count < batchSize:
-                    # ignore these slots (they only get smaller, so reset i=0
-                    # now)
-                    break       # break out
+                    # break out (partial batches seem to completely ruin the
+                    # model for whatever reason)
+                    # use continue because in case we shuffle the outer
+                    # dimension, we might get the partial batches in the
+                    # middle
+                    i += 1
+                    continue
                 
                 #print('feature(0) len: %d' % len(features_output[0]))
                 #print('feature(1) len: %d' % len(features_output[1]))
                 #print('feature(2) len: %d' % len(features_output[2]))
-
-                # FIXME: what if length is less than batch size? need padding
-
-                #sys.exit(1)
 
                 # debug: print out first 40 actions (useful to compare with
                 #        SyntaxNet)
                 self.logger.debug('gold_actions: %s' % \
                     str(gold_actions[:40]))
 
-                assert len(self.training['feature_endpoints']) == len(features_output)
+                assert len(self.training['feature_endpoints']) == \
+                    len(features_output)
 
                 feed_dict = {}
                 for k in range(len(self.training['feature_endpoints'])):
+                    features_output[k] = np.asarray(features_output[k])
                     feed_dict[self.training['feature_endpoints'][k]] = \
-                        features_output[k]
+                        features_output[k].reshape( \
+                            [-1, len(self.featureNames[k])])
+
+                feed_dict[self.training['filled_slots']] = filled_count
                 feed_dict[self.training['gold_actions']] = gold_actions
 
-                #run_metadata = tf.RunMetadata()
-                c, _ = sess.run([self.training['cost'], self.training['train_op']],
+                c, _ = sess.run([self.training['cost'],
+                                self.training['train_op']],
                                 feed_dict=feed_dict)
-                #,
-                #                options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-                #                run_metadata=run_metadata)
-                #from tensorflow.python.client import timeline
-                #trace = timeline.Timeline(step_stats=run_metadata.step_stats)
-                #trace_file = open('timeline.ctf.json', 'w')
-                #trace_file.write(trace.generate_chrome_trace_format())
 
-
-                # divide cost by number of actual batch items returned
-                #avg_cost += c / len(gold_actions)
-                #avg_cost += c
-                
                 if i > 0 and i % print_freq == 0:
                     self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
                         (epoch_num+1, i+1, "{:.2f}".format(c)))
@@ -965,25 +819,20 @@ class Parser(object):
             features_major_types, features_output, epochs, \
                 filled_count = test_reader_output
 
-            if filled_count < batchSize:
-                continue
-
-            assert len(self.evaluation['feature_endpoints']) == len(features_output)
-
-            # FIXME: don't input if filled_count less than batchSize
-            # or do padding
+            assert len(self.evaluation['feature_endpoints']) == \
+                len(features_output)
 
             feed_dict = {}
             for k in range(len(self.evaluation['feature_endpoints'])):
-                feed_dict[self.evaluation['feature_endpoints'][k]] = features_output[k]
+                features_output[k] = np.asarray(features_output[k])
+                feed_dict[self.evaluation['feature_endpoints'][k]] = \
+                    features_output[k].reshape( \
+                        [-1, len(self.featureNames[k])])
 
             logits = sess.run(self.evaluation['logits'], feed_dict=feed_dict)
             logits = np.asarray(logits)
 
-            print(i, logits.shape)
-            #print(len(logits))
-            #print(len(logits[0]))
-            #print(logits[0])
+            logger.info('Evaluating batch %d/%d...' % (i+1, test_runs))
 
             sentences = test_reader_decoded.getNextAnnotations()
             outputs.append(sentences)
@@ -1004,43 +853,52 @@ class Parser(object):
                     gold_head = w.HEAD
                     gold_deprel = w.DEPREL
                     if gold_head == -1:
-                        # ??? FIXME: unconditionally?
-                        gold_deprel = "ROOT"
+                        gold_deprel = 'ROOT'
 
                     if w.parsedHead == -1:
-                        w.parsedLabel = "ROOT" # make it simple
+                        # make it simple
+                        w.parsedLabel = 'ROOT'
 
-                    if w.parsedLabel == gold_deprel:
-                        deprel_correct += 1
+                    if shouldScoreToken(w.FORM, w.UPOSTAG,
+                            self.modelParams.scoring_strategy):
+                        if w.parsedLabel == gold_deprel:
+                            deprel_correct += 1
+                        else:
+                            suffix = 'L'
+
+                        if w.parsedHead == gold_head:
+                            head_correct += 1
+                        else:
+                            suffix += 'H'
+
+                        if w.parsedLabel == gold_deprel and \
+                                w.parsedHead == gold_head:
+                            deprel_and_head_correct += 1
+                            # mark both correct
+                            suffix = 'O'
+
+                        token_count += 1
+
+                        if w.parsedHead == -1:
+                            logger.info('%-20s%-10s%-5d%-5s' % \
+                                (w.FORM, 'ROOT', w.parsedHead, suffix))
+                        else:
+                            logger.info('%-20s%-10s%-5d%-5s' % \
+                                (w.FORM, w.parsedLabel, w.parsedHead, suffix))
                     else:
-                        suffix = 'L'
-
-                    if w.parsedHead == gold_head:
-                        head_correct += 1
-                    else:
-                        suffix += 'H'
-
-                    if w.parsedLabel == gold_deprel and \
-                            w.parsedHead == gold_head:
-                        deprel_and_head_correct += 1
-                        suffix = 'O' # both correct
-
-                    token_count += 1
-
-                    if w.parsedHead == -1:
-                        logger.info('%-20s%-10s%-5d%-5s' % \
-                            (w.FORM, 'ROOT', w.parsedHead, suffix))
-                    else:
-                        logger.info('%-20s%-10s%-5d%-5s' % \
-                            (w.FORM, w.parsedLabel, w.parsedHead, suffix))
+                        logger.debug('Not scoring token: form="%s", tag="%s"' \
+                            % (w.FORM, w.UPOSTAG))
 
         if token_count <= 0:
+            logger.warning('No tokens to calculate Attachment Error Metric')
             return
 
         # errors that accumulate (tokens are tested based on previous decoded
         # decisions, which could screw up shifting and arcing, etc)
         # SyntaxNet uses UAS (HEAD-only) for its evaluation during training!
         logger.info('Attachment Error Metric (%s_set)' % mode)
+        logger.info('Scoring Strategy: %s' % \
+            self.modelParams.scoring_strategy)
         logger.info('Accuracy(UAS): %d/%d (%.2f%%)' % \
             (head_correct, token_count,
             100.0 * float(head_correct) / float(token_count)))
@@ -1081,6 +939,7 @@ def __main__():
 
     modelParams.cfg = configNamespace
     modelParams.lexicon = Lexicon(modelParams)
+    modelParams.scoring_strategy = args.scoring_strategy
 
     if args.train:
         config = tf.ConfigProto()
@@ -1097,7 +956,7 @@ def __main__():
             parser.setupParser('train')
             parser.buildNetwork('train')
             sess.run(list(parser.inits.values()))
-            parser.startTrainingOpt(sess, epochs_to_run=args.epochs,
+            parser.startTraining(sess, epochs_to_run=args.epochs,
                 restart=args.restart)
     else:
         assert None, 'evaluation mode not implemented'

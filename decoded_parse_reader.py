@@ -6,7 +6,7 @@ from arc_standard_transition_system import ArcStandardTransitionSystem, \
     ArcStandardTransitionState
 
 '''
-Provide a batch of sentences to the trainer
+Provide a batch of decoded sentences to the trainer
 
 Maintains batch_size slots of sentences, each one with its own parser state
 '''
@@ -18,9 +18,8 @@ class DecodedParseReader(object):
         self.feature_strings = feature_strings
         self.feature_maps = feature_maps
         self.epoch_print = epoch_print
-        self.feature_extractor = \
-            SparseFeatureExtractor(self.feature_strings, self.feature_maps)
-
+        self.feature_extractor = SparseFeatureExtractor(self.feature_strings,
+                                                        self.feature_maps)
         self.sentence_batch = SentenceBatch(input_corpus, self.batch_size)
         self.parser_states = [None for i in range(self.batch_size)]
         self.arc_states = [None for i in range(self.batch_size)]
@@ -68,14 +67,6 @@ class DecodedParseReader(object):
         for batch_index in range(self.batch_size):
             state = self.state(batch_index)
             if state != None:
-                #nextGoldAction = self.transition_system \
-                #    .getNextGoldAction(state)
-
-                #self.logger.debug('Slot(%d) - Gold action: %s' %
-                #    (batch_index, self.transition_system.actionAsString(
-                #    nextGoldAction, state, \
-                # self.feature_maps)))
-
                 # default action if none given
                 bestAction = ParserState.SHIFT
                 bestScore = float('-inf')
@@ -205,7 +196,7 @@ class DecodedParseReader(object):
             else:
                 token.clearParsedHead()
                 if rewrite_root_labels:
-                    token.setParsedLabel("ROOT")
+                    token.setParsedLabel('ROOT')
 
     '''
     Concatenate and return sentence annotations for all sentence slots

@@ -1,29 +1,12 @@
 import logging
-from feature_extractor_opt import SparseFeatureExtractor
+from feature_extractor import SparseFeatureExtractor
 from sentence_batch import SentenceBatch
 from parser_state import ParserState
 from arc_standard_transition_system import ArcStandardTransitionSystem, \
     ArcStandardTransitionState
-from multiprocessing import Pool
-
-feature_extractor = None
-
-def f(s):
-    #fd = open('/tmp/featext.bin', 'rb')
-    #import copy
-    #my_feature_extractor = copy.deepcopy(feature_extractor)
-    #fd.close()
-    return feature_extractor.extract(s, doLogging=False)
-
-def batchExtractSparse(allStates, poolCount):
-    with Pool(poolCount) as p:
-        result = p.map(f, allStates)
-    return result
-
-
 
 '''
-Provide a batch of sentences to the trainer
+Provide a batch of gold sentences to the trainer
 
 Maintains batch_size slots of sentences, each one with its own parser state
 '''
@@ -35,17 +18,8 @@ class GoldParseReader(object):
         self.feature_strings = feature_strings
         self.feature_maps = feature_maps
         self.epoch_print = epoch_print
-
-        global feature_extractor
-        #feature_extractor = SparseFeatureExtractor(self.feature_strings,
-        #                                           self.feature_maps)
-        #import pickle
-        #pickle.dump(feature_extractor, open('/tmp/featext.bin', 'wb'))
-
         self.feature_extractor = SparseFeatureExtractor(self.feature_strings,
                                                         self.feature_maps)
-        feature_extractor = self.feature_extractor
-
         self.sentence_batch = SentenceBatch(input_corpus, self.batch_size)
         self.parser_states = [None for i in range(self.batch_size)]
         self.arc_states = [None for i in range(self.batch_size)]
@@ -110,8 +84,6 @@ class GoldParseReader(object):
     Returns (None, None, None, ...) if no sentences left
     '''
     def nextFeatureBags(self):
-        import time
-        self.logger.info('nextFeatureBags -- START %.4f' % time.time())
         self.performActions()
         for i in range(self.batch_size):
             if self.state(i) == None:
@@ -146,19 +118,19 @@ class GoldParseReader(object):
                 continue
             statesToExtract.append(self.state(i))
 
-        #import pickle
-        #pickle.dump(statesToExtract[-1], open('/tmp/state.bin', 'wb'))
-
-        self.logger.info('nextFeatureBags -- EXSTART %.4f' % time.time())
-        #allBatches = batchExtractSparse(statesToExtract, 1)
-
         # Populate feature outputs
         for i in range(self.batch_size):
             if self.state(i) == None:
                 continue
 
             self.logger.debug('Slot(%d): extract features' % i)
-            fvec = self.feature_extractor.extract(self.state(i), doLogging=False)
+
+            '''
+            If you want to enable more detailed logging, please set
+            doLogging here. Disabled for performance.
+            '''
+            fvec = self.feature_extractor.extract(self.state(i), \
+                doLogging=False)
             assert len(fvec.types) == len(self.feature_strings)
             major_types, ids = fvec.concatenateSimilarTypes()
 
@@ -171,33 +143,7 @@ class GoldParseReader(object):
 
             for k in range(len(features_major_types)):
                 features_output[k] += ids[k]
-
-        self.logger.info('nextFeatureBags -- EXEND %.4f' % time.time())
         
-        '''
-        z = 0
-        # Populate feature outputs
-        for i in range(self.batch_size):
-            if self.state(i) == None:
-                continue
-
-            self.logger.debug('Slot(%d): extract features' % i)
-            fvec = allBatches[z]
-            assert len(fvec.types) == len(self.feature_strings)
-            major_types, ids = fvec.concatenateSimilarTypes()
-
-            if features_output == None:
-                features_major_types = [t for t in major_types]
-                features_output = [[] for t in major_types]
-            else:
-                assert len(features_major_types) == len(major_types)
-                assert len(features_output) == len(major_types)
-
-            for k in range(len(features_major_types)):
-                features_output[k] += ids[k]
-            z += 1
-        '''
-
         # Fill in gold actions
         for i in range(self.batch_size):
             if self.state(i) != None:
@@ -209,32 +155,8 @@ class GoldParseReader(object):
                         self.transition_system.getNextGoldAction(self.state(i)))
                 except:
                     self.logger.info('Warning: invalid batch slot')
-                    ## TODO: remove erroneous ones from training set??
                     gold_actions.append(
                         self.transition_system.getDefaultAction(self.state(i)))
 
-        self.logger.info('nextFeatureBags -- END %.4f' % time.time())
-
         return features_major_types, features_output, gold_actions, \
                self.num_epochs
-'''
-## performance tests
-
-import pickle
-statesToExtract = []
-a=pickle.load(open('/tmp/state.bin', 'rb'))
-for v in range(5000):
-    statesToExtract.append(a)
-
-feature_extractor = pickle.load(open('/tmp/featext.bin', 'rb'))
-
-import time
-startTime = time.time()
-
-for pc in [1,2,3,4,5,6,7]:
-    print('nextFeatureBags -- EXSTART PC(%d)' % pc)
-    batchExtractSparse(statesToExtract, pc)
-    endTime = time.time()
-    print('nextFeatureBags -- EXEND PC(%d) %.4fs (%.2f states/sec)' % (pc, endTime-startTime, float(len(statesToExtract)) / (endTime-startTime)))
-    #feature_extractor.extract(statesToExtract[-1])
-'''
