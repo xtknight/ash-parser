@@ -29,4 +29,4 @@ Differences from SyntaxNet:
 - Precalculation and caching of feature bags. This makes it easier to train multiple models with the same token features but different hyperparameters
 - No support for structured (beam) parsing. Considering LSTM or something simpler and faster instead
 - Feature groups are automatically created by groups of tag, word, and label rather than by grouping together with semicolon in a context file
-- Only support for the arc-standard transition parser, not the POS tagger, morpholigcal analyzer, or tokenizer
+- Only support for the arc-standard transition parser, not the POS tagger, morphological analyzer, or tokenizer
