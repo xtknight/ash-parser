@@ -2,6 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import hashlib
 import sys
 import pickle
 import copy
@@ -12,6 +13,8 @@ import numpy as np
 import sys
 import os
 import argparse
+import json
+#import cProfile
 
 from model_parameters import *
 from lexicon import *
@@ -29,7 +32,7 @@ logger = logging.getLogger('DepParser')
 
 parser = argparse.ArgumentParser(
     description='Train a Chen and Manning-style neural network dependency' \
-                'parser')
+                ' parser')
 
 # Required positional argument
 parser.add_argument('model_folder', type=str,
@@ -45,6 +48,15 @@ parser.add_argument('--evaluate', action='store_true', default=False,
                     help='Evaluate an existing model')
 parser.add_argument('--debug', action='store_true', default=False,
                     help='Enable verbose debug lines')
+parser.add_argument('--restart', action='store_true', default=False,
+                    help='Re-train model from scratch instead of restoring '
+                         'a previously saved model')
+parser.add_argument('--epochs', type=int, default=10,
+                    help='Number of epochs to run (run-throughs over all '
+                         'training corpus feature bags). Default 10')
+#parser.add_argument('--feature-bag', type=str,
+#                    help='Specify pre-created feature bag file to save' \
+#                         ' computation time (saved in model dir by default')
 #parser.add_argument('--epochs', type=int, default=10,
 #                    help='Training epochs (default 10). Shuffle sentences '
 #                         ' and re-train during each training epoch.')
@@ -113,10 +125,20 @@ def embeddingLookupFeatures(params, ids):
 
   # Lookup embeddings.
   embeddings = tf.nn.embedding_lookup(params, ids)
+  '''
+  embeddings.shape (6144, 32)
+  embeddings.shape (10240, 32)
+  embeddings.shape (10240, 64)
+  '''
   #embeddings = tensorDumpValsAllIter(embeddings, [embeddings],
   #    '/tmp/ash_embeddings')
   return embeddings
 
+def fileHash(fname):
+    fd = open(fname, 'rb')
+    retval = hashlib.sha1(fd.read()).hexdigest()
+    fd.close()
+    return retval
 
 '''
 Entry point for dependency parser
@@ -140,8 +162,8 @@ class Parser(object):
         with tf.name_scope('params') as self._param_scope:
             pass
 
-        self.trainingCorpus = None
-        self.testingCorpus = None
+        #self.trainingCorpus = None
+        #self.testingCorpus = None
 
     def getStep(self):
         def onesInitializer(shape, dtype=tf.float32, partition_info=None):
@@ -184,8 +206,9 @@ class Parser(object):
     '''
     def addParam(self, shape, dtype, name, initializer=None,
             return_average=False):
-        if name in self.params:
-            self.logger.warning(name + ' already exists!')
+        # this isn't a problem. we reload variables if they already exist.        
+        #if name in self.params:
+        #    self.logger.warning(name + ' already exists!')
 
         if name not in self.params:
             step = tf.cast(self.getStep(), tf.float32)
@@ -360,6 +383,7 @@ class Parser(object):
 
         learningRate = self.modelParams.cfg['learningRate']
         decaySteps = self.modelParams.cfg['decaySteps']
+        # FIXME: does momentum/learning rate reload properly when retraining?
         momentum = self.modelParams.cfg['momentum']
         topK = self.modelParams.cfg['topK']
         hiddenLayerSizes = self.modelParams.cfg['hiddenLayerSizes']
@@ -559,6 +583,8 @@ class Parser(object):
                 # Start getting sentence batches...
                 #reader = GoldParseReader(self.trainingCorpus, batchSize, \
                 #    featureStrings, self.featureMaps)
+                # FIXME: need to allow variable input
+                # otherwise, this just keeps on going
                 self.attachmentMetric(sess, runs=100, mode='training')
                 continue
             
@@ -583,8 +609,17 @@ class Parser(object):
                     features_output[k]
             feed_dict[self.training['gold_actions']] = gold_actions
 
+            #run_metadata = tf.RunMetadata()
             c, _ = sess.run([self.training['cost'], self.training['train_op']],
                             feed_dict=feed_dict)
+            #,
+            #                options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+            #                run_metadata=run_metadata)
+            #from tensorflow.python.client import timeline
+            #trace = timeline.Timeline(step_stats=run_metadata.step_stats)
+            #trace_file = open('timeline.ctf.json', 'w')
+            #trace_file.write(trace.generate_chrome_trace_format())
+
 
             # divide cost by number of actual batch items returned
             #avg_cost += c / len(gold_actions)
@@ -609,6 +644,274 @@ class Parser(object):
             epoch_num_old = epoch_num
 
             i += 1
+
+    '''
+    Serialize the feature definitions
+    (so that we can determine when they change)
+    '''
+    def serializeFeatureDef(self):
+        d = []
+
+        bs = self.modelParams.cfg['batchSize']
+        d.append(bs)
+
+        fs = self.modelParams.cfg['featureStrings']
+        # order doesn't matter
+        fs.sort()
+        d.append(fs)
+
+        e = []
+        # because dictionaries aren't ordered...
+        for (k, v) in self.modelParams.cfg['embeddingSizes'].items():
+            e.append((k,v))
+        # sort by key
+        e.sort()
+
+        d.append(e)
+        return json.dumps(d)
+
+    '''
+    Generate or load pre-computed feature bags
+    '''
+    def obtainFeatureBags(self, trainingFileName):
+        batchSize = self.modelParams.cfg['batchSize']
+
+        activeFeatureDef = self.serializeFeatureDef().strip()
+        activeCorpusHash = fileHash(trainingFileName)
+
+        cachedFeatureDef = None
+        try:
+            fd = open(self.modelParams.getFilePath('feature-def'), 'r',
+                encoding='utf-8')
+            cachedFeatureDef = fd.read().strip()
+            fd.close()
+        except:
+            cachedFeatureDef = None
+
+        cachedCorpusHash = None
+        try:
+            fd = open(self.modelParams.getFilePath('training-corpus-hash'), 'r',
+                encoding='utf-8')
+            cachedCorpusHash = fd.read().strip()
+            self.logger.debug('Cached corpus hash: %s' % cachedCorpusHash)
+            fd.close()
+        except:
+            cachedCorpusHash = None
+
+        self.logger.debug('Training corpus hash: %s' % activeCorpusHash)
+        self.logger.debug('Cached corpus hash: %s' % cachedCorpusHash)
+
+        self.logger.debug('Active feature definition: %s' % activeFeatureDef)
+        self.logger.debug('Cached feature definition: %s' % cachedFeatureDef)
+
+        if activeFeatureDef == cachedFeatureDef and \
+                activeCorpusHash == cachedCorpusHash:
+            self.logger.info('Loading pre-existing feature bags...')
+            fd = open(self.modelParams.getFilePath('feature-bag-bin'), 'rb')
+            batches = pickle.load(fd)
+            fd.close()
+        else:
+            featureStrings = self.modelParams.cfg['featureStrings']
+            self.logger.info('Feature bag needs recalculation (first training' \
+                ' or features changed)')
+
+            trainingCorpus = ParsedConllFile()
+            trainingCorpus.read(open(self.modelParams.trainingFile, 'r',
+                encoding='utf-8').read())
+
+            # Start getting sentence batches...
+            reader = GoldParseReader(trainingCorpus, batchSize, \
+                featureStrings, self.featureMaps)
+
+            batches = []
+
+            i = 0
+            while(True):
+                self.logger.info('Generating feature bag #%d...' % (i+1))
+                reader_output = reader.nextFeatureBags()
+                if reader_output[0] == None:
+                    self.logger.debug('Iter(%d): reader output is None' % i)
+                    break
+
+                features_major_types, features_output, gold_actions, \
+                    epoch_num = reader_output
+
+                if epoch_num > 1:
+                    # don't make more than one epoch
+                    break
+
+                batches.append(reader_output)
+                i += 1
+
+            self.logger.info('Saving feature bags...')
+
+            fd = open(self.modelParams.getFilePath('feature-bag-bin'), 'wb')
+            pickle.dump(batches, fd)
+            fd.close()
+
+            fd = open(self.modelParams.getFilePath('feature-def'), 'w',
+                encoding='utf-8')
+            fd.write(activeFeatureDef)
+            fd.close()
+
+            fd = open(self.modelParams.getFilePath('training-corpus-hash'), 'w',
+                encoding='utf-8')
+            fd.write(activeCorpusHash)
+            fd.close()
+
+        return batches
+
+    '''
+    Start training from scratch, or from where we left off
+    '''
+    def startTrainingOpt(self, sess, epochs_to_run=10, restart=False):
+        batchSize = self.modelParams.cfg['batchSize']
+        featureStrings = self.modelParams.cfg['featureStrings']
+
+        ckpt_dir = fixPath(self.modelParams.modelFolder) + '/'
+        saver = tf.train.Saver()
+
+        if restart:
+            self.logger.info('Start fitting')
+        else:
+            ckpt = tf.train.get_checkpoint_state(ckpt_dir)
+            if ckpt and ckpt.model_checkpoint_path:
+                # Restore variables from disk.
+                saver.restore(sess, ckpt.model_checkpoint_path)
+                self.logger.info('Model restored')
+                self.logger.info('Continue fitting')
+            else:
+                self.logger.info('Start fitting')
+
+        # every 10 batches, reset avg and print
+        print_freq = 10
+
+        save_freq = 50
+        #eval_freq = 200
+
+        batches = self.obtainFeatureBags(self.modelParams.trainingFile)
+
+        '''
+        batches = []
+
+        i = 0
+        while(True):
+            self.logger.info('Iter(%d): nextFeatureBags()' % i)
+            reader_output = reader.nextFeatureBags()
+            if reader_output[0] == None:
+                self.logger.debug('Iter(%d): reader output is None' % i)
+                break
+
+            features_major_types, features_output, gold_actions, \
+                epoch_num = reader_output
+
+            if epoch_num > 1:
+                # don't make more than one epoch
+                break
+
+            batches.append(reader_output)
+            i += 1
+
+            #if i > 5000: # that's enough batches
+            #    break
+        '''
+
+        epoch_num = 0
+
+        while epoch_num < epochs_to_run:
+            i = 0
+            while i < len(batches):
+                reader_output = batches[i]
+                if reader_output[0] == None:
+                    self.logger.debug('Iter(%d): reader output is None' % i)
+                    break
+
+                '''
+                    epoch_num refers to the number of run-throughs through the
+                    whole training corpus, whereas `i` is just the batch
+                    iteration number
+                '''
+
+                features_major_types, features_output, gold_actions, \
+                    _ = reader_output
+
+                #print('gold_action_len: %d' % len(gold_actions))
+
+                filled_count = len(gold_actions)
+                if filled_count < batchSize:
+                    # ignore these slots (they only get smaller, so reset i=0
+                    # now)
+                    break       # break out
+                
+                #print('feature(0) len: %d' % len(features_output[0]))
+                #print('feature(1) len: %d' % len(features_output[1]))
+                #print('feature(2) len: %d' % len(features_output[2]))
+
+                # FIXME: what if length is less than batch size? need padding
+
+                #sys.exit(1)
+
+                # debug: print out first 40 actions (useful to compare with
+                #        SyntaxNet)
+                self.logger.debug('gold_actions: %s' % \
+                    str(gold_actions[:40]))
+
+                assert len(self.training['feature_endpoints']) == len(features_output)
+
+                feed_dict = {}
+                for k in range(len(self.training['feature_endpoints'])):
+                    feed_dict[self.training['feature_endpoints'][k]] = \
+                        features_output[k]
+                feed_dict[self.training['gold_actions']] = gold_actions
+
+                #run_metadata = tf.RunMetadata()
+                c, _ = sess.run([self.training['cost'], self.training['train_op']],
+                                feed_dict=feed_dict)
+                #,
+                #                options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+                #                run_metadata=run_metadata)
+                #from tensorflow.python.client import timeline
+                #trace = timeline.Timeline(step_stats=run_metadata.step_stats)
+                #trace_file = open('timeline.ctf.json', 'w')
+                #trace_file.write(trace.generate_chrome_trace_format())
+
+
+                # divide cost by number of actual batch items returned
+                #avg_cost += c / len(gold_actions)
+                #avg_cost += c
+                
+                if i > 0 and i % print_freq == 0:
+                    self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
+                        (epoch_num+1, i+1, "{:.2f}".format(c)))
+                    #self.quickEvaluationMetric(sess, mode='training')
+                    # reset avg
+                    #avg_cost = 0.0
+
+                if i > 0 and i % save_freq == 0:
+                    save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
+                    self.logger.info('Model saved to file: %s' % save_path)
+                    #self.attachmentMetric(sess, runs=100, mode='training')
+                    #self.attachmentMetric(sess, runs=100, mode='testing')
+
+                #if i > 0 and i % eval_freq == 0:
+                #    self.attachmentMetric(sess, runs=200)
+
+                i += 1
+
+            epoch_num += 1
+
+            if epoch_num < epochs_to_run:
+                # evaluate now. otherwise evaluate after training
+                # complete message is shown
+                #self.attachmentMetric(sess, runs=100, mode='training')
+                pass
+            else:
+                self.logger.info('Training is complete (%d epochs)' % \
+                    epochs_to_run)
+                save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
+                self.logger.info('Model saved to file: %s' % save_path)
+                self.attachmentMetric(sess, runs=100, mode='testing')
+                return
 
     def attachmentMetric(self, sess, runs=200, mode='testing'):
         batchSize = self.modelParams.cfg['batchSize']
@@ -748,43 +1051,57 @@ class Parser(object):
             (deprel_correct, token_count,
             100.0 * float(deprel_correct) / float(token_count)))
 
-modelParams = ModelParameters(args.model_folder)
-modelParams.trainingFile = args.training_file
-modelParams.testingFile = args.testing_file
+def __main__():
+    modelParams = ModelParameters(args.model_folder)
+    modelParams.trainingFile = args.training_file
+    modelParams.testingFile = args.testing_file
 
-# set variables from parser-config and isolate them in a separate namespace
-# to avoid collisions with this code
-configFile = open(modelParams.getFilePath('parser-config'), 'r', \
-                  encoding='utf-8').read()
-compile(configFile, '<string>', 'exec')
-configNamespace = {}
-exec(configFile, configNamespace)
+    # set variables from parser-config and isolate them in a separate namespace
+    # to avoid collisions with this code
+    fd = open(modelParams.getFilePath('parser-config'), 'r', \
+                      encoding='utf-8')
+    configFile = fd.read()
+    fd.close()
 
-# TODO: use trainingSteps
-requiredFields = ['trainingSteps', 'learningRate', 'batchSize', 'topK',
-                  'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
-                  'momentum']
-for field in requiredFields:
-    assert configNamespace[field] != None, 'please set %s in config' % field
+    fd = open(modelParams.getFilePath('trained-config'), 'w', \
+                      encoding='utf-8')
+    fd.write(configFile)
+    fd.close()
 
-modelParams.cfg = configNamespace
-modelParams.lexicon = Lexicon(modelParams)
+    compile(configFile, '<string>', 'exec')
+    configNamespace = {}
+    exec(configFile, configNamespace)
 
-if args.train:
-    config = tf.ConfigProto()
-    #config.gpu_options.allow_growth=True
-    #config.gpu_options.per_process_gpu_memory_fraction=1.0
+    # TODO: use trainingSteps
+    requiredFields = ['trainingSteps', 'learningRate', 'batchSize', 'topK',
+                      'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
+                      'momentum']
+    for field in requiredFields:
+        assert configNamespace[field] != None, 'please set %s in config' % field
 
-    # very important for Parser to be under a session scope
-    with tf.Session(config=config) as sess:
-        parser = Parser(modelParams)
-        #print(parser.inits.values())
+    modelParams.cfg = configNamespace
+    modelParams.lexicon = Lexicon(modelParams)
 
-        # perform variable initialization
+    if args.train:
+        config = tf.ConfigProto()
+        #config.gpu_options.allow_growth=True
+        #config.gpu_options.per_process_gpu_memory_fraction=1.0
 
-        parser.setupParser('train')
-        parser.buildNetwork('train')
-        sess.run(list(parser.inits.values()))
-        parser.startTraining(sess)
-else:
-    assert None, 'evaluation mode not implemented'
+        # very important for Parser to be under a session scope
+        with tf.Session(config=config) as sess:
+            parser = Parser(modelParams)
+            #print(parser.inits.values())
+
+            # perform variable initialization
+
+            parser.setupParser('train')
+            parser.buildNetwork('train')
+            sess.run(list(parser.inits.values()))
+            parser.startTrainingOpt(sess, epochs_to_run=args.epochs,
+                restart=args.restart)
+    else:
+        assert None, 'evaluation mode not implemented'
+
+__main__()
+
+#cProfile.run('__main__()', 'mainstats')

@@ -4,6 +4,8 @@ import logging
 from conll_utils import ParsedConllSentence, ParsedConllToken
 from parser_state import ParserState
 
+GlobalFeatureStringCache = dict()
+
 logger = logging.getLogger('FeatureExtractor')
 
 '''
@@ -134,7 +136,7 @@ class ChildFeatureLocator(ParserIndexLocator):
         # same logic as SyntaxNet
         if (focus.val < -1) or (focus.val >= self.parser.numTokens()):
             if self.doLogging:
-                logger.debug('ChildFeatureLocator: focus=-2')
+                self.logger.debug('ChildFeatureLocator: focus=-2')
             focus.val = -2
             return
 
@@ -142,12 +144,12 @@ class ChildFeatureLocator(ParserIndexLocator):
         if (levels < 0):
             focus.val = self.parser.leftmostChild(focus.val, -levels)
             if self.doLogging:
-                logger.debug('ChildFeatureLocator: leftmostChild: levels=%d, '
+                self.logger.debug('ChildFeatureLocator: leftmostChild: levels=%d, '
                     'focus=%d->%d' % (levels, oldfocus, focus.val))
         else:
             focus.val = self.parser.rightmostChild(focus.val, levels)
             if self.doLogging:
-                logger.debug('ChildFeatureLocator: rightmostChild: levels=%d, '
+                self.logger.debug('ChildFeatureLocator: rightmostChild: levels=%d, '
                     'focus=%d->%d' % (levels, oldfocus, focus.val))
 
 '''
@@ -169,7 +171,7 @@ class SiblingFeatureLocator(ParserIndexLocator):
         # same logic as SyntaxNet
         if (focus.val < -1) or (focus.val >= self.parser.numTokens()):
             if self.doLogging:
-                logger.debug('SiblingFeatureLocator: focus=-2')
+                self.logger.debug('SiblingFeatureLocator: focus=-2')
             focus.val = -2
             return
 
@@ -177,13 +179,13 @@ class SiblingFeatureLocator(ParserIndexLocator):
         if (position < 0):
             focus.val = self.parser.leftSibling(focus.val, -position)
             if self.doLogging:
-                logger.debug('SiblingFeatureLocator: leftSibling: ' \
+                self.logger.debug('SiblingFeatureLocator: leftSibling: ' \
                     'position=%d, ' \
                     'focus=%d->%d' % (position, oldfocus, focus.val))
         else:
             focus.val = self.parser.rightSibling(focus.val, position)
             if self.doLogging:
-                logger.debug('SiblingFeatureLocator: rightSibling: ' \
+                self.logger.debug('SiblingFeatureLocator: rightSibling: ' \
                     'position=%d, ' \
                     'focus=%d->%d' % (position, oldfocus, focus.val))
 
@@ -294,11 +296,240 @@ class SparseFeatureExtractor(object):
             fvec.values.append(fval)
         return fvec
 
+    def extractOne(self, parser, featureString, doLogging=True):
+        global GlobalFeatureStringCache
+        
+        if featureString not in GlobalFeatureStringCache:
+            featureParts = featureString.split('.')
+
+            # must reference at least one focus and at least one feature
+            # (tag/label/etc), therefore, at least two elements
+            assert len(featureParts) >= 2
+
+            # featureParts: ['stack(1)', 'child(-1)', 'sibling(1)', 'word']
+            decodedParts = []
+            for p in featureParts:
+                p = p.strip()
+                decodedParts.append(decodeFeatureString(p))
+            # decodedParts: [('stack', [1]), ('child', [-1]), ('sibling', [1]),
+            #                ('word', [])]
+            assert len(decodedParts) >= 2
+            assert(decodedParts[0][0] == 'input' or decodedParts[0][0] == 'stack')
+
+            GlobalFeatureStringCache[featureString] = decodedParts
+        else:
+            decodedParts = GlobalFeatureStringCache[featureString]
+
+        # start setting focus and follow focus modifiers until real feature
+        # (tag/label/etc)
+        focus = None
+        feature_name = featureString
+        feature_major_type = None #featureString.split('.')[-1]
+        feature_index = None
+
+        for d in decodedParts:
+            fname = d[0]
+            fargs = d[1]
+            if fname == 'input':
+                assert feature_index == None, \
+                    'can\'t update focus if feature is already set'
+                if len(fargs) == 0:
+                    fargs=[0]
+                focus = parser.input(fargs[0])
+            elif fname == 'stack':
+                assert feature_index == None, \
+                    'can\'t update focus if feature is already set'
+                if len(fargs) == 0:
+                    fargs=[0]
+                focus = parser.stack(fargs[0])
+            elif fname == 'head':
+                assert focus != None, 'can\'t take HEAD of null focus'
+                assert feature_index == None, \
+                    'can\'t update focus if feature is already set'
+
+                assert len(fargs) == 1
+                levels = fargs[0]
+                assert levels >= 1
+
+                # same logic as SyntaxNet
+                if (focus < -1) or (focus >= parser.numTokens()):
+                    focus = -2
+                else:
+                    focus = parser.parent(focus, levels)
+            elif fname == 'child':
+                assert focus != None, 'can\'t take CHILD of null focus'
+                assert feature_index == None, \
+                    'can\'t update focus if feature is already set'
+
+                levels = fargs[0]
+                assert levels != 0
+
+                # same logic as SyntaxNet
+                if (focus < -1) or (focus >= parser.numTokens()):
+                    if doLogging:
+                        self.logger.debug('ChildFeatureLocator: focus=-2')
+                    focus = -2
+                else:
+                    oldfocus = focus
+                    if (levels < 0):
+                        focus = parser.leftmostChild(focus, -levels)
+                        if doLogging:
+                            self.logger.debug('ChildFeatureLocator: leftmostChild: levels=%d, '
+                                'focus=%d->%d' % (levels, oldfocus, focus))
+                    else:
+                        focus = parser.rightmostChild(focus, levels)
+                        if doLogging:
+                            self.logger.debug('ChildFeatureLocator: rightmostChild: levels=%d, '
+                                'focus=%d->%d' % (levels, oldfocus, focus))
+
+                #ChildFeatureLocator(parser, fargs, \
+                #    doLogging=doLogging).updateArgs(focus)
+            elif fname == 'sibling':
+                assert focus != None, 'can\'t take SIBLING of null focus'
+                assert feature_index == None, \
+                    'can\'t update focus if feature is already set'
+                position = fargs[0]
+                assert position != 0
+
+                # same logic as SyntaxNet
+                if (focus < -1) or (focus >= parser.numTokens()):
+                    if doLogging:
+                        self.logger.debug('SiblingFeatureLocator: focus=-2')
+                    focus = -2
+                else:
+                    oldfocus = focus
+                    if (position < 0):
+                        focus = parser.leftSibling(focus, -position)
+                        if doLogging:
+                            self.logger.debug('SiblingFeatureLocator: leftSibling: ' \
+                                'position=%d, ' \
+                                'focus=%d->%d' % (position, oldfocus, focus))
+                    else:
+                        focus = parser.rightSibling(focus, position)
+                        if doLogging:
+                            self.logger.debug('SiblingFeatureLocator: rightSibling: ' \
+                                'position=%d, ' \
+                                'focus=%d->%d' % (position, oldfocus, focus))
+            else:
+                assert focus != None, 'can\'t request feature of null focus'
+                assert feature_index == None, \
+                    'can\'t request feature when feature is already set; ' \
+                        'nested features not supported'
+
+                if doLogging:
+                    self.logger.debug('focus: %d' % focus)
+
+                if fname == 'label':
+                    feature_major_type = 'label'
+                    if focus == -1:
+                        feature_index = \
+                            self.feature_maps[feature_major_type] \
+                                .valueToIndex('<ROOT>')
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<ROOT>'))
+
+                    elif focus < -1 or focus >= parser.numTokens():
+                        feature_index = \
+                            self.feature_maps[feature_major_type] \
+                                .valueToIndex('<OUTSIDE>')
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<OUTSIDE>'))
+
+                    else:
+                        # pulls label from parser itself, which means it won't
+                        # be gold as long as parser wasn't initialized with
+                        # gold labels
+                        feature_index = parser.label(focus)
+
+                        if feature_index == -1:
+                            feature_index = \
+                                self.feature_maps[feature_major_type] \
+                                    .valueToIndex('<ROOT>')
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<ROOT>'))
+                        else:
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, \
+                                    self.feature_maps[feature_major_type] \
+                                        .indexToValue(parser.label(focus))))
+
+                elif fname == 'word':
+                    feature_major_type = 'word'
+                    if focus < 0 or focus >= parser.numTokens():
+                        feature_index = \
+                            self.feature_maps[feature_major_type] \
+                                .valueToIndex('<OUTSIDE>')
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % \
+                                (feature_name, feature_index, '<OUTSIDE>'))
+                    else:
+                        try:
+                            feature_index = \
+                                self.feature_maps[feature_major_type] \
+                                    .valueToIndex(parser.getToken(
+                                        focus).FORM)
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, \
+                                    parser.getToken(focus).FORM))
+                        except: # Out of Vocabulary
+                            feature_index = \
+                                self.feature_maps[feature_major_type] \
+                                    .valueToIndex('<UNKNOWN>')
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<UNKNOWN>'))
+                elif fname == 'tag':
+                    feature_major_type = 'tag'
+                    if focus < 0 or focus >= parser.numTokens():
+                        feature_index = self.feature_maps[feature_major_type] \
+                            .valueToIndex('<OUTSIDE>')
+
+                        if doLogging:
+                            self.logger.debug('%s: %d (%s)' % (feature_name, \
+                                feature_index, '<OUTSIDE>'))
+                    else:
+                        try:
+                            feature_index = \
+                                self.feature_maps[feature_major_type] \
+                                    .valueToIndex(parser.getToken(
+                                        focus).XPOSTAG)
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index,
+                                    parser.getToken(focus).XPOSTAG))
+                        except: # Out of Vocabulary
+                            feature_index = \
+                                self.feature_maps[feature_major_type] \
+                                    .valueToIndex('<UNKNOWN>')
+
+                            if doLogging:
+                                self.logger.debug('%s: %d (%s)' % \
+                                    (feature_name, feature_index, '<UNKNOWN>'))
+                else:
+                    assert None, 'unknown feature name \'' + fname + '\''
+
+        assert feature_name != None, 'feature name undetermined'
+        assert feature_major_type != None, 'feature major type undetermined'
+        assert feature_index != None, 'focus set but feature never requested'
+        return FeatureType(feature_major_type, feature_name), feature_index
+
     '''
     featureString: stack(1).child(-1).sibling(1).word
     doLogging=False: don't log if we're just in init mode
     '''
-    def extractOne(self, parser, featureString, doLogging=True):
+    def extractOneOld(self, parser, featureString, doLogging=True):
         featureParts = featureString.split('.')
 
         # must reference at least one focus and at least one feature

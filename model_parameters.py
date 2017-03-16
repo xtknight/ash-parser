@@ -1,7 +1,9 @@
 '''
 Contains all parameters for a model
 '''
-FILE_TYPES = ['label-map', 'word-map', 'tag-map', 'parser-config', 'embeddings']
+FILE_TYPES = ['label-map', 'word-map', 'tag-map', 'parser-config', 'embeddings',
+              'feature-def', 'feature-bag-bin', 'training-corpus-hash',
+              'trained-config']
 
 def fixPath(m):
     if m.endswith('/'):
