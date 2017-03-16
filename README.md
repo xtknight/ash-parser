@@ -29,7 +29,7 @@ Differences from SyntaxNet:
 - Pure Python3 implementation. No need for bazel
 - LAS (Labeled Attachment Score) prints out during evaluation
 - Precalculation and caching of feature bags. This makes it easier to train multiple models with the same token features but different hyperparameters
-- No support for structured (beam) parsing. Considering LSTM or something simpler and faster instead
+- No support for structured (beam) parsing. Considering LSTM or something simpler and faster instead for the future. Accuracy loss should be in the ballpark of 1-2% due to this.
 - Feature groups are automatically created by groups of tag, word, and label rather than by grouping together with semicolon in a context file
 - Only support for the arc-standard transition parser, not the POS tagger, morphological analyzer, or tokenizer
 - ngrams, punctuation_amount, morph tags and other features not yet implemented
