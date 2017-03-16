@@ -603,7 +603,7 @@ class Parser(object):
 
             # Start getting sentence batches...
             reader = GoldParseReader(trainingCorpus, batchSize, \
-                featureStrings, self.featureMaps)
+                featureStrings, self.featureMaps, epoch_print=False)
 
             batches = []
 
