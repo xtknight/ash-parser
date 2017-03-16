@@ -23,6 +23,7 @@ from arc_standard_transition_system import ArcStandardTransitionState, \
      ArcStandardTransitionSystem
 from gold_parse_reader import GoldParseReader
 from decoded_parse_reader import DecodedParseReader
+from tensorflow.python.ops import state_ops
 
 logger = logging.getLogger('DepParser')
 
@@ -72,7 +73,7 @@ if (args.train and args.evaluate) or ((not args.train) and (not args.evaluate)):
     sys.exit(1)
 
 
-def BatchedSparseToDense(sparse_indices, output_size):
+def batchedSparseToDense(sparse_indices, output_size):
     """Batch compatible sparse to dense conversion.
 
     This is useful for one-hot coded target labels.
@@ -87,26 +88,157 @@ def BatchedSparseToDense(sparse_indices, output_size):
     eye = tf.diag(tf.fill([output_size], tf.constant(1, tf.float32)))
     return tf.nn.embedding_lookup(eye, sparse_indices)
 
+def embeddingLookupFeatures(params, ids):
+  """Computes embeddings for each entry of sparse features sparse_features.
+
+  Args:
+    params: list of 2D tensors containing vector embeddings
+    sparse_features: 1D tensor of strings. Each entry is a string encoding of
+      dist_belief.SparseFeatures, and represents a variable length list of
+      feature ids, and optionally, corresponding weights values.
+    allow_weights: boolean to control whether the weights returned from the
+      SparseFeatures are used to multiply the embeddings.
+
+  Returns:
+    A tensor representing the combined embeddings for the sparse features.
+    For each entry s in sparse_features, the function looks up the embeddings
+    for each id and sums them into a single tensor weighing them by the
+    weight of each id. It returns a tensor with each entry of sparse_features
+    replaced by this combined embedding.
+  """
+  #params = tensorDumpValsAllIter(params, [params], '/tmp/ash_params')
+
+  if not isinstance(params, list):
+    params = [params]
+
+  # Lookup embeddings.
+  embeddings = tf.nn.embedding_lookup(params, ids)
+  #embeddings = tensorDumpValsAllIter(embeddings, [embeddings],
+  #    '/tmp/ash_embeddings')
+  return embeddings
 
 
 '''
 Entry point for dependency parser
 '''
 class Parser(object):
-    def __init__(self, modelParams, mode):
+    def __init__(self, modelParams):
         self.logger = logging.getLogger('Parser')
         self.modelParams = modelParams
-        self.setupParser(mode)
-        self.setupVariables(mode)
-    
+
+        self.variables = {}
+        self.params = {}
+        self.trainableParams = []
+        self.inits = {}
+        self.averaging = {}
+        self.averaging_decay = self.modelParams.cfg['averagingDecay']
+        self.use_averaging = True
+        self.check_parameters = True
+        self.training = {}
+        self.evaluation = {}
+
+        with tf.name_scope('params') as self._param_scope:
+            pass
+
         self.trainingCorpus = None
         self.testingCorpus = None
+
+    def getStep(self):
+        def onesInitializer(shape, dtype=tf.float32, partition_info=None):
+            return tf.ones(shape, dtype)
+        return self.addVariable([], tf.int32, 'step', onesInitializer)
+
+    def incrementCounter(self, counter):
+        return state_ops.assign_add(counter, 1, use_locking=True)
+
+    def addLearningRate(self, initial_learning_rate, decay_steps):
+        """Returns a learning rate that decays by 0.96 every decay_steps.
+
+        Args:
+            initial_learning_rate: initial value of the learning rate
+            decay_steps: decay by 0.96 every this many steps
+
+        Returns:
+            learning rate variable.
+        """
+        step = self.getStep()
+        return cf.with_dependencies(
+            [self.incrementCounter(step)],
+            tf.train.exponential_decay(initial_learning_rate,
+                step,
+                decay_steps,
+                0.96,
+                staircase=True))
+
+    def addVariable(self, shape, dtype, name, initializer=None):
+        if name in self.variables:
+            return self.variables[name]
+        self.variables[name] = tf.get_variable(name, shape, dtype, initializer)
+        if initializer is not None:
+            self.inits[name] = state_ops.init_variable(self.variables[name],
+                               initializer)
+        return self.variables[name]
+
+    '''
+    Don't use variable_scope, as param names will overwrite each other
+    '''
+    def addParam(self, shape, dtype, name, initializer=None,
+            return_average=False):
+        if name in self.params:
+            self.logger.warning(name + ' already exists!')
+
+        if name not in self.params:
+            step = tf.cast(self.getStep(), tf.float32)
+            with tf.name_scope(self._param_scope):
+                # Put all parameters and their initializing ops in their own
+                # scope irrespective of the current scope (training or eval).
+                self.params[name] = tf.get_variable(name, shape, dtype,
+                    initializer)
+                param = self.params[name]
+
+                if initializer is not None:
+                    self.inits[name] = state_ops.init_variable(param,
+                        initializer)
+                if self.averaging_decay == 1:
+                    self.logging.info('Using vanilla averaging of parameters.')
+                    ema = tf.train.ExponentialMovingAverage(
+                        decay=(step / (step + 1.0)), num_updates=None)
+                else:
+                    ema = tf.train.ExponentialMovingAverage(
+                        decay=self.averaging_decay, num_updates=step)
+
+                self.averaging[name + '_avg_update'] = ema.apply([param])
+                self.variables[name + '_avg_var'] = ema.average(param)
+                self.inits[name + '_avg_init'] = state_ops.init_variable(
+                        ema.average(param), tf.zeros_initializer())
+        return (self.variables[name + '_avg_var'] if return_average else
+                        self.params[name])
+
+    def addEmbedding(self, features, num_features, num_ids, embedding_size,
+            major_type, return_average=False):
+        initializer = tf.random_normal_initializer(
+                    stddev=1.0 / embedding_size**.5, \
+                    seed=0)
+
+        embedding_matrix = self.addParam(
+            [num_ids, embedding_size],
+            tf.float32,
+            'embedding_matrix_%s' % major_type,
+            initializer,
+            return_average=return_average)
+
+        embedding = embeddingLookupFeatures(embedding_matrix,
+                                            tf.reshape(features,
+                                                       [-1],
+                                                       name='feature_%s' % major_type))
+
+        return tf.reshape(embedding, [-1, num_features * embedding_size])
 
     '''
     Setup transition and action system and feature maps
     (necessary whether training or evaluating)
     '''
-    def setupParser(self, mode='train'):
+    def setupParser(self, mode):
         hiddenLayerSizes = self.modelParams.cfg['hiddenLayerSizes']
         featureStrings = self.modelParams.cfg['featureStrings']
         embeddingSizes = self.modelParams.cfg['embeddingSizes']
@@ -152,7 +284,7 @@ class Parser(object):
             'order): ' + str(self.featureMajorTypeGroups))
 
         self.featureDomainSizes = []
-        self.featureEmbeddings = []
+        #self.featureEmbeddings = []
 
         # For now, use all same embedding sizes
         self.featureEmbeddingSizes = \
@@ -193,16 +325,8 @@ class Parser(object):
             self.featureDomainSizes.append(
                 self.featureMaps[major_type].getDomainSize())
 
-            with tf.variable_scope("feature_%s" % major_type):
-                self.featureEmbeddings.append(tf.get_variable("embeddings", \
-                    [self.featureMaps[major_type].getDomainSize(), \
-                    self.featureEmbeddingSizes[i]], \
-                    initializer=tf.random_normal_initializer(
-                        stddev=1.0 / self.featureEmbeddingSizes[i]**.5, \
-                        seed=0)))
-
         assert len(self.featureDomainSizes) == len(self.featureEmbeddingSizes)
-        assert len(self.featureDomainSizes) == len(self.featureEmbeddings)
+        #assert len(self.featureDomainSizes) == len(self.featureEmbeddings)
         assert len(self.featureDomainSizes) == len(self.featureNames)
 
         self.logger.info('')
@@ -214,147 +338,168 @@ class Parser(object):
         self.logger.info('Total features input size: %d' % \
             (batchSize*self.BAG_OF_FEATURES_LEN))
 
-        # we'll use parser state's version of the action encoding
+        # for actions, we don't encode UNKNOWN, ROOT, or OUTSIDE
+        # we only encode the number of base values
         self.ACTION_COUNT = self.transitionSystem.numActions(
-            self.featureMaps['label'].getDomainSize())
-
-        self.ACTION_ARRAY = [n for n in range(self.ACTION_COUNT)]
+            self.featureMaps['label'].lastBaseValue + 1)
 
         self.logger.info('Total action count: %d' % self.ACTION_COUNT)
 
     '''
     Setup TensorFlow Variables in model
     '''
-    def setupVariables(self, mode='train'):
+    def buildNetwork(self, mode='train'):
+        assert mode == 'train' or mode == 'eval'
+
+        if mode == 'train':
+            return_average = False
+            nodes = self.training
+        else:
+            return_average = True
+            nodes = self.evaluation
+
         learningRate = self.modelParams.cfg['learningRate']
+        decaySteps = self.modelParams.cfg['decaySteps']
         momentum = self.modelParams.cfg['momentum']
         topK = self.modelParams.cfg['topK']
         hiddenLayerSizes = self.modelParams.cfg['hiddenLayerSizes']
         batchSize = self.modelParams.cfg['batchSize']
 
-        # Bag of features at each parser state
-        self.X = tf.placeholder(tf.float32, [None, self.BAG_OF_FEATURES_LEN], \
-            name="ph_X")
-        self.gold_actions = tf.placeholder(tf.int32, [None], \
-            name="ph_gold_actions")
+        with tf.name_scope(mode):
+            weights = []
+            biases = []
+            embeddings = []
+            nodes['feature_endpoints'] = []
 
-        self.global_step = tf.Variable(0, name='global_step', trainable=False)
+            for i in range(len(self.featureMajorTypeGroups)):
+                major_type = self.featureMajorTypeGroups[i]
+                # it will be number of features*batch size number of sparse integers (ids)
+                nodes['feature_endpoints'].append(tf.placeholder(tf.int32, \
+                    [batchSize * len(self.featureNames[i])],
+                    name="ph_feature_endpoints_%s" % major_type))
+                embeddings.append(self.addEmbedding(nodes['feature_endpoints'][i],
+                                            len(self.featureNames[i]),
+                                            self.featureDomainSizes[i],
+                                            self.featureEmbeddingSizes[i],
+                                            major_type,
+                                            return_average=return_average))
 
-        self.weights = []
-        self.biases = []
+            # Input layer
+            last_layer = tf.concat(embeddings, 1)
+            last_layer_size = self.BAG_OF_FEATURES_LEN
 
-        # Input layer
-        prevLayerSize = self.BAG_OF_FEATURES_LEN
-
-        # Hidden layers
-        for i in range(len(hiddenLayerSizes)):
-            h = hiddenLayerSizes[i]
-
-            with tf.variable_scope("layer_%d" % i):
-                self.weights.append(tf.get_variable("weights", \
-                    [prevLayerSize, h], \
-                    initializer=tf.random_normal_initializer(
-                        stddev=1e-4, seed=0)))
-
-                self.biases.append(tf.get_variable("biases", [h], \
-                    initializer=tf.constant_initializer(0.2)))
-
-            prevLayerSize = h
-        
-        # Output layer
-        with tf.variable_scope("softmax"):
-            self.weights.append(tf.get_variable("weights", \
-                [prevLayerSize, self.ACTION_COUNT], \
-                initializer=tf.random_normal_initializer(stddev=1e-4, seed=0)))
-
-            self.biases.append(tf.get_variable("biases", \
-                [self.ACTION_COUNT], initializer=tf.zeros_initializer()))
-
-            #
-            #self.biases.append(tf.get_variable("biases", \
-            #    [self.ACTION_COUNT], initializer=tf.constant_initializer(0.2)))
-        
-        def greedy_graph_builder(x, weights, biases):
-            hidden_layers = []
-            last_layer = x
-
-            # Input and hidden layers
+            # Hidden layers
             for i in range(len(hiddenLayerSizes)):
-                # FIXME: decide whether or not to do drop-out
-                #this_layer = tf.nn.dropout(this_layer, 0.5)
+                h = hiddenLayerSizes[i]
 
-                x = tf.convert_to_tensor(last_layer, name="x")
-                w = tf.convert_to_tensor(weights[i], name="w")
-                b = tf.convert_to_tensor(biases[i], name="b")
+                weights.append(self.addParam(
+                    [last_layer_size, h],
+                    tf.float32,
+                    'layer_%d_weights' % i,
+                    tf.random_normal_initializer(stddev=1e-4, seed=0),
+                    return_average=return_average))
 
-                with tf.name_scope('relu', 'relu_layer', \
-                        [x, w, b]) as name:
-                    this_layer = tf.nn.relu(
-                        tf.nn.xw_plus_b(x, w, b),
-                        name=name)
+                biases.append(self.addParam(
+                    [h],
+                    tf.float32,
+                    'layer_%d_biases' % i,
+                    tf.constant_initializer(0.2),
+                    return_average=return_average))
 
-                hidden_layers.append(this_layer)
-                last_layer = hidden_layers[-1]
-
+                last_layer = tf.nn.relu_layer(last_layer,
+                                    weights[-1],
+                                    biases[-1],
+                                    name='layer_%d' % i)
+                last_layer_size = h
+            
             # Output layer
+            weights.append(self.addParam(
+                [last_layer_size, self.ACTION_COUNT],
+                tf.float32,
+                'softmax_weights',
+                tf.random_normal_initializer(stddev=1e-4, seed=0),
+                return_average=return_average))
+
+            biases.append(self.addParam(
+                [self.ACTION_COUNT],
+                tf.float32,
+                'softmax_biases',
+                tf.zeros_initializer(),
+                return_average=return_average))
+            
             logits = tf.nn.xw_plus_b(last_layer,
-                weights[-1],
-                biases[-1],
-                name='logits')
+                             weights[-1],
+                             biases[-1],
+                             name='logits')
 
-            return hidden_layers, logits
+            if mode == 'train':
+                nodes['gold_actions'] = tf.placeholder(tf.int32, [None], \
+                    name="ph_gold_actions")
 
-        # Construct model
-        self.hidden_layers, self.logits = \
-            greedy_graph_builder(self.X, self.weights, self.biases)
+                dense_golden = batchedSparseToDense(nodes['gold_actions'], \
+                    self.ACTION_COUNT)
 
-        #self.gold_actions = tf.Print(self.gold_actions, [self.gold_actions], message="gold_actions: ", summarize=40)
+                # FIXME: rather than batchSize, might be filled_slots
+                cross_entropy = tf.div(
+                    tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
+                        logits=logits, labels=dense_golden)), batchSize)
 
-        #print('gold_actions:', self.gold_actions)
+                # cross_entropy = tf.Print(cross_entropy, [cross_entropy], message='cross_entropy')
 
-        dense_golden = BatchedSparseToDense(self.gold_actions, \
-            self.ACTION_COUNT)
+                # regularize all parameters except output layer
+                regularized_params = [tf.nn.l2_loss(p) for p in weights[:-1]]
+                regularized_params += [tf.nn.l2_loss(p) for p in biases[:-1]]
 
-        print('self.logits shape:', self.logits.get_shape())
-        print('dense_golden shape:', dense_golden.get_shape())
+                l2_loss = 1e-4 * tf.add_n(regularized_params) \
+                    if regularized_params else 0
 
-        cross_entropy = tf.div(
-            tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
-                logits=self.logits, labels=dense_golden)), batchSize)
+                cost = tf.add(cross_entropy, l2_loss, name='cost')
 
-        # regularize all parameters except output layer
-        regularized_params = [tf.nn.l2_loss(p) for p in self.weights[:-1]]
-        regularized_params += [tf.nn.l2_loss(p) for p in self.biases[:-1]]
+                lr = self.addLearningRate(learningRate, decaySteps)
 
-        l2_loss = 1e-4 * tf.add_n(regularized_params) \
-            if regularized_params else 0
+                optimizer = tf.train.MomentumOptimizer(lr,
+                    momentum,
+                    use_locking=False)
 
-        self.cost = tf.add(cross_entropy, l2_loss, name='cost')
+                trainableParams = self.params.values()
 
-        self.optimizer = tf.train.MomentumOptimizer(
-            learning_rate=learningRate, momentum=momentum) \
-                .minimize(self.cost, global_step=self.global_step)
+                train_op = optimizer.minimize(cost, var_list=trainableParams)
 
-        #self.optimizer = tf.train.AdamOptimizer(
-        #    learning_rate=learningRate).minimize(self.cost, \
-        #        global_step=self.global_step)
+                for param in trainableParams:
+                    slot = optimizer.get_slot(param, 'momentum')
+                    self.inits[slot.name] = state_ops.init_variable(slot,
+                        tf.zeros_initializer())
+                    self.variables[slot.name] = slot
 
-        #self.cost = tf.reduce_mean(
-        #    tf.nn.softmax_cross_entropy_with_logits(self.out_layer, self.Y))
-        #self.optimizer = tf.train.AdagradOptimizer(
-        #    learning_rate=learningRate).minimize(self.cost, \
-        #        global_step=self.global_step)
+                numerical_checks = [
+                    tf.check_numerics(param,
+                        message='Parameter is not finite.')
+                    for param in trainableParams
+                    if param.dtype.base_dtype in [tf.float32, tf.float64]
+                ]
+                check_op = tf.group(*numerical_checks)
+                avg_update_op = tf.group(*self.averaging.values())
+                train_ops = [train_op]
+                if self.check_parameters:
+                    train_ops.append(check_op)
+                if self.use_averaging:
+                    train_ops.append(avg_update_op)
 
-        # FIXME: to be honest, SyntaxNet doesn't seem to be using softmax
-        # they pass logits as the raw transition scores
-        self.pred = tf.nn.softmax(self.logits)
-        self.pred_top_k = tf.nn.top_k(self.pred, k=topK)
+                nodes['train_op'] = tf.group(*train_ops, name='train_op')
+                nodes['cost'] = cost
+                nodes['logits'] = logits
+                #writer = tf.summary.FileWriter(self.modelParams.modelFolder, \
+                #    graph=tf.get_default_graph())
+            else:
+                nodes['logits'] = logits
+                #writer = tf.summary.FileWriter(self.modelParams.modelFolder, \
+                #    graph=tf.get_default_graph())
 
 
     '''
     Start training from scratch, or from where we left off
     '''
-    def startTraining(self):
+    def startTraining(self, sess):
         batchSize = self.modelParams.cfg['batchSize']
         featureStrings = self.modelParams.cfg['featureStrings']
 
@@ -366,209 +511,109 @@ class Parser(object):
         reader = GoldParseReader(self.trainingCorpus, batchSize, \
             featureStrings, self.featureMaps)
 
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth=True
-        #config.gpu_options.per_process_gpu_memory_fraction=1.0
-
-        # Add an op to initialize the variables.
-        init_op = tf.global_variables_initializer()
-
         epoch_num_old = 0
-        avg_cost = 0.0
+        #avg_cost = 0.0
 
         ckpt_dir = fixPath(self.modelParams.modelFolder) + '/'
 
         saver = tf.train.Saver()
 
-        with tf.Session(config=config) as sess:
-            sess.run(init_op)
+        #with tf.device('/gpu:0'):
+        #sess.run(init_op)
 
-            ckpt = tf.train.get_checkpoint_state(ckpt_dir)
-            if ckpt and ckpt.model_checkpoint_path:
-                # Restore variables from disk.
-                saver.restore(sess, ckpt.model_checkpoint_path)
-                self.logger.info('Model restored')
-                self.logger.info('Continue fitting')
+        ckpt = tf.train.get_checkpoint_state(ckpt_dir)
+        if ckpt and ckpt.model_checkpoint_path:
+            # Restore variables from disk.
+            saver.restore(sess, ckpt.model_checkpoint_path)
+            self.logger.info('Model restored')
+            self.logger.info('Continue fitting')
 
-            # every 10 batches, reset avg and print
-            print_freq = 10
+        # every 10 batches, reset avg and print
+        print_freq = 10
 
-            save_freq = 50
-            #eval_freq = 200
+        save_freq = 50
+        #eval_freq = 200
 
-            i = 0
-            while(True):
-                self.logger.debug('Iter(%d): nextFeatureBags()' % i)
-                reader_output = reader.nextFeatureBags()
-                if reader_output[0] == None:
-                    self.logger.debug('Iter(%d): reader output is None' % i)
-                    break
+        i = 0
+        while(True):
+            self.logger.debug('Iter(%d): nextFeatureBags()' % i)
+            reader_output = reader.nextFeatureBags()
+            if reader_output[0] == None:
+                self.logger.debug('Iter(%d): reader output is None' % i)
+                break
 
-                '''
-                    epoch_num refers to the number of run-throughs through the
-                    whole training corpus, whereas `i` is just the batch
-                    iteration number
-                '''
-
-                features_major_types, features_output, gold_actions, \
-                    epoch_num = reader_output
-
-                print('gold_actions:', gold_actions[:40])
-
-                embeddings = []
-
-                # order of features will match the order of our arrays above
-                for k in range(len(features_output)):
-                    print('ids:', k, features_output[k][:256])
-
-                    embeddings.append(tf.nn.embedding_lookup(
-                        self.featureEmbeddings[k], features_output[k]))
-
-                    embeddings[-1] = tf.reshape(embeddings[-1], \
-                        [-1, len(self.featureNames[k]) * \
-                        self.featureEmbeddingSizes[k]])
-                
-                tf_batch_x = tf.concat(axis=1, values=embeddings)
-
-                #tf_batch_y = tf.one_hot(indices=tf.constant(gold_actions), \
-                #    depth=self.ACTION_COUNT, on_value=1.0, \
-                #    off_value=0.0, axis=-1)
-
-                #dense_golden = BatchedSparseToDense( \
-                # tf.identity(gold_actions), self.ACTION_COUNT)
-
-                #self.gold_actions = tf.identity(tf.constant(gold_actions), \
-                #    name="gold_actions")
-
-                _, c = sess.run([self.optimizer, self.cost], \
-                                feed_dict={self.X: tf_batch_x.eval(),
-                                           self.gold_actions: gold_actions})
-
-                # divide by number of actual batch items returned
-                avg_cost += c / len(gold_actions)
-
-                if i > 0 and i % print_freq == 0:
-                    self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
-                        (epoch_num, i+1, "{:.9e}".format(avg_cost)))
-                    self.quickEvaluationMetric(sess, mode='training')
-                    # reset avg
-                    avg_cost = 0.0
-
-                if i > 0 and i % save_freq == 0:
-                    save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
-                    self.logger.info('Model saved to file: %s' % save_path)
-                    self.attachmentMetric(sess, runs=100, mode='training')
-                    #self.attachmentMetric(sess, runs=100, mode='testing')
-
-                #if i > 0 and i % eval_freq == 0:
-                #    self.attachmentMetric(sess, runs=200)
-
-                epoch_num_old = epoch_num
-
-                i += 1
-
-    '''
-    Evaluate a trained model with each token being independent
-    and having a gold stack
-    '''
-    def quickEvaluationMetric(self, sess, mode='testing'):
-        batchSize = self.modelParams.cfg['batchSize']
-        featureStrings = self.modelParams.cfg['featureStrings']
-
-        assert mode == 'testing' or mode == 'training'
-
-        testingCorpus = ParsedConllFile()
-        if mode == 'testing':
-            testingCorpus.read(open(self.modelParams.testingFile, 'r',
-                                     encoding='utf-8').read())
-        elif mode == 'training':
-            testingCorpus.read(open(self.modelParams.trainingFile, 'r',
-                                     encoding='utf-8').read())
-
-        # Start getting sentence batches...
-        test_reader = GoldParseReader(testingCorpus, batchSize, \
-            featureStrings, self.featureMaps, epoch_print=False)
-
-        correctActions = 0
-        correctElems = 0
-        totalElems = 0
-
-        test_runs = 10
-        for i in range(test_runs):
-            test_reader_output = test_reader.nextFeatureBags()
-            if test_reader_output[0] == None:
-                logger.critical('Reader error')
-                return
+            '''
+                epoch_num refers to the number of run-throughs through the
+                whole training corpus, whereas `i` is just the batch
+                iteration number
+            '''
 
             features_major_types, features_output, gold_actions, \
-                epoch_num = test_reader_output
+                epoch_num = reader_output
 
-            embeddings = []
+            #print('gold_action_len: %d' % len(gold_actions))
 
-            # order of features will match the order of our arrays above
-            for k in range(len(features_output)):
-                embeddings.append(tf.nn.embedding_lookup(
-                    self.featureEmbeddings[k], features_output[k]))
-
-                embeddings[-1] = tf.reshape(embeddings[-1], \
-                    [-1, len(self.featureNames[k]) * \
-                    self.featureEmbeddingSizes[k]])
+            filled_count = len(gold_actions)
+            if filled_count < batchSize:
+                # restart from beginning
+                # Start getting sentence batches...
+                #reader = GoldParseReader(self.trainingCorpus, batchSize, \
+                #    featureStrings, self.featureMaps)
+                self.attachmentMetric(sess, runs=100, mode='training')
+                continue
             
-            tf_batch_x = tf.concat(axis=1, values=embeddings)
+            #print('feature(0) len: %d' % len(features_output[0]))
+            #print('feature(1) len: %d' % len(features_output[1]))
+            #print('feature(2) len: %d' % len(features_output[2]))
 
-            Y_actual = tf.one_hot(indices=tf.constant(gold_actions), \
-                depth=self.ACTION_COUNT, on_value=1.0, off_value=0.0, \
-                axis=-1).eval()
+            # FIXME: what if length is less than batch size? need padding
 
-            Y_pred = sess.run(self.pred, feed_dict={self.X: tf_batch_x.eval()})
+            #sys.exit(1)
 
-            for i in range(len(Y_actual)):
-                # decode one-hot
+            # debug: print out first 40 actions (useful to compare with
+            #        SyntaxNet)
+            self.logger.debug('gold_actions: %s' % \
+                str(gold_actions[:40]))
 
-                predActionCombined = np.argmax(Y_pred[i])
-                actualActionCombined = np.argmax(Y_actual[i])
+            assert len(self.training['feature_endpoints']) == len(features_output)
 
-                predAction = self.transitionSystem.actionType(
-                    predActionCombined)
+            feed_dict = {}
+            for k in range(len(self.training['feature_endpoints'])):
+                feed_dict[self.training['feature_endpoints'][k]] = \
+                    features_output[k]
+            feed_dict[self.training['gold_actions']] = gold_actions
 
-                actualAction = self.transitionSystem.actionType(
-                    actualActionCombined)
+            c, _ = sess.run([self.training['cost'], self.training['train_op']],
+                            feed_dict=feed_dict)
 
-                if predAction == ParserState.SHIFT:
-                    predTag = None
-                else:
-                    predTag = self.transitionSystem.label(predActionCombined)
+            # divide cost by number of actual batch items returned
+            #avg_cost += c / len(gold_actions)
+            #avg_cost += c
+            
+            if i > 0 and i % print_freq == 0:
+                self.logger.info('Epoch: %04d Iter: %06d cost=%s' % \
+                    (epoch_num, i+1, "{:.2f}".format(c)))
+                #self.quickEvaluationMetric(sess, mode='training')
+                # reset avg
+                #avg_cost = 0.0
 
-                if actualAction == ParserState.SHIFT:
-                    actualTag = None
-                else:
-                    actualTag = self.transitionSystem.label(
-                        actualActionCombined)
+            if i > 0 and i % save_freq == 0:
+                save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
+                self.logger.info('Model saved to file: %s' % save_path)
+                #self.attachmentMetric(sess, runs=100, mode='training')
+                #self.attachmentMetric(sess, runs=100, mode='testing')
 
-                if predAction == actualAction:
-                    correctActions += 1
+            #if i > 0 and i % eval_freq == 0:
+            #    self.attachmentMetric(sess, runs=200)
 
-                if predAction == actualAction and predTag == actualTag:
-                    correctElems += 1
+            epoch_num_old = epoch_num
 
-                totalElems += 1
-
-        # also print out number of correct actions (even if tag was wrong)
-        # errors that don't accumulate (tokens are tested individually with
-        # gold stack)
-        self.logger.info('Gold Stack Error Metric (%s_set)' % mode)
-        self.logger.info('Actions+Labels: %d/%d (%.2f%%), '
-                         'Actions: %d/%d (%.2f%%)' % \
-                         (correctElems, totalElems, 100.0 * \
-                         (float(correctElems) / float(totalElems)), \
-                         correctActions, totalElems, 100.0 * \
-                         (float(correctActions) / float(totalElems))))
-
+            i += 1
 
     def attachmentMetric(self, sess, runs=200, mode='testing'):
-        #batchSize = self.modelParams.cfg['batchSize']
+        batchSize = self.modelParams.cfg['batchSize']
 
-        batchSize = 128 # let's try a smaller batch for evaluation
+        #batchSize = 128 # let's try a smaller batch for evaluation
         featureStrings = self.modelParams.cfg['featureStrings']
         topK = self.modelParams.cfg['topK']
 
@@ -599,6 +644,8 @@ class Parser(object):
 
         filled_count = 0
 
+        self.buildNetwork('eval')
+
         # eventually will be (filled_count, num_actions)
         logits = np.asarray([])
 
@@ -615,50 +662,25 @@ class Parser(object):
             features_major_types, features_output, epochs, \
                 filled_count = test_reader_output
 
-            embeddings = []
+            if filled_count < batchSize:
+                continue
 
-            # order of features will match the order of our arrays above
-            for k in range(len(features_output)):
-                embeddings.append(tf.nn.embedding_lookup(
-                    self.featureEmbeddings[k], features_output[k]))
-                embeddings[-1] = tf.reshape(embeddings[-1],
-                    [-1, len(self.featureNames[k]) * \
-                         self.featureEmbeddingSizes[k]])
-            
-            tf_batch_x = tf.concat(axis=1, values=embeddings)
+            assert len(self.evaluation['feature_endpoints']) == len(features_output)
 
-            #Y_pred_top_k = sess.run(self.pred_top_k, \
-            #    feed_dict={self.X: tf_batch_x.eval()})
+            # FIXME: don't input if filled_count less than batchSize
+            # or do padding
 
-            #print(self.logits.get_shape())
+            feed_dict = {}
+            for k in range(len(self.evaluation['feature_endpoints'])):
+                feed_dict[self.evaluation['feature_endpoints'][k]] = features_output[k]
 
-            logits = sess.run(self.logits, \
-                feed_dict={self.X: tf_batch_x.eval()})
+            logits = sess.run(self.evaluation['logits'], feed_dict=feed_dict)
+            logits = np.asarray(logits)
 
-            #print(type(logits))
-            #print(logits.shape)
-            #logits2 = logits.reshape((filled_count,)
-
-            #Y_pred_top_k = sess.run(self.logits, \
-            #    feed_dict={self.X: tf_batch_x.eval()})
-
-            # Y_pred_top_k[0][i]: K top values for token i (descending order)
-            #
-            # [ 12.58759022  11.70285416   6.45877123   6.01622534
-            #   4.81124258 1.8947413    1.11786246  -0.2629841
-            #   -1.64534914  -1.66685677]
-            #
-            # Y_pred_top_k[1][i]: K top indices for token i
-            # [ 3  0  7 11 17 55 13  1  9 51]
-            #
-            # we're interested in indices (indicating our desired action)
-
-            # change to major index being sentence
-            #pred_top_k_var = []
-
-            #for m in range(len(Y_pred_top_k[1])):
-            #    assert len(Y_pred_top_k[1][m]) == topK
-            #    pred_top_k_var.append(Y_pred_top_k[1][m])
+            print(i, logits.shape)
+            #print(len(logits))
+            #print(len(logits[0]))
+            #print(logits[0])
 
             sentences = test_reader_decoded.getNextAnnotations()
             outputs.append(sentences)
@@ -709,6 +731,9 @@ class Parser(object):
                         logger.info('%-20s%-10s%-5d%-5s' % \
                             (w.FORM, w.parsedLabel, w.parsedHead, suffix))
 
+        if token_count <= 0:
+            return
+
         # errors that accumulate (tokens are tested based on previous decoded
         # decisions, which could screw up shifting and arcing, etc)
         # SyntaxNet uses UAS (HEAD-only) for its evaluation during training!
@@ -746,7 +771,20 @@ modelParams.cfg = configNamespace
 modelParams.lexicon = Lexicon(modelParams)
 
 if args.train:
-    parser = Parser(modelParams, 'train')
-    parser.startTraining()
+    config = tf.ConfigProto()
+    #config.gpu_options.allow_growth=True
+    #config.gpu_options.per_process_gpu_memory_fraction=1.0
+
+    # very important for Parser to be under a session scope
+    with tf.Session(config=config) as sess:
+        parser = Parser(modelParams)
+        #print(parser.inits.values())
+
+        # perform variable initialization
+
+        parser.setupParser('train')
+        parser.buildNetwork('train')
+        sess.run(list(parser.inits.values()))
+        parser.startTraining(sess)
 else:
     assert None, 'evaluation mode not implemented'

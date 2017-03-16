@@ -77,7 +77,10 @@ class Lexicon(object):
         self.tagMap.appendSpecialValue("<OUTSIDE>")
         self.labelMap.appendSpecialValue("<OUTSIDE>")
 
-        self.tagMap.appendSpecialValue("<ROOT>")
+        # FIXME: is <ROOT> in tag even possible? it seemed to happen in
+        # testdata but not in UD_English
+        # difference between stack.tag and stack.token.tag?
+        #self.tagMap.appendSpecialValue("<ROOT>")
         self.labelMap.appendSpecialValue("<ROOT>")
 
         self.featureMaps = {'word': self.wordMap, 'tag': self.tagMap,
