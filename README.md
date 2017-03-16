@@ -24,6 +24,7 @@ Similarities to SyntaxNet
 - Due to same architecture, accuracy should be very close to Greedy SyntaxNet
 
 Differences from SyntaxNet:
+- Context file with redundant or boilerplate information is unnecessary
 - Supports GPU: training phase can complete in minutes
 - Pure Python3 implementation. No need for bazel
 - LAS (Labeled Attachment Score) prints out during evaluation
