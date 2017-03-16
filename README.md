@@ -17,7 +17,7 @@ External dependencies
 Similarities to SyntaxNet
 - Same embedding system (configurable per-feature group deep embedding)
 - Same optimizer (Momentum with exponential moving average)
-- Lexicon builder is identical
+- Lexicon builder is identical for words, tags, and labels
 - Evaluation metric is identical (SyntaxNet's corresponds to AshParser's UAS)
 - Feature system is almost identical (except perhaps some very rare corner cases)
 - Due to same architecture, accuracy should be very close to Greedy SyntaxNet
@@ -30,3 +30,4 @@ Differences from SyntaxNet:
 - No support for structured (beam) parsing. Considering LSTM or something simpler and faster instead
 - Feature groups are automatically created by groups of tag, word, and label rather than by grouping together with semicolon in a context file
 - Only support for the arc-standard transition parser, not the POS tagger, morphological analyzer, or tokenizer
+- ngrams, punctuation_amount, morph tags and other features not yet implemented
