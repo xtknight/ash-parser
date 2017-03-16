@@ -1,9 +1,12 @@
-trainingSteps = 2000
-learningRate = 0.007        # Adam works well with 0.005 or 0.001, RMSProp works well with 0.01 (kind of)
-batchSize = 500
-topK = 10                   # How many predictions to consider (could be increased to # of actions, supposedly...? may just want to set it that way from the beginning)
+decaySteps = 4400
+averagingDecay = 0.9999
+learningRate = 0.08
+momentum = 0.85
 
-# 256,256 seems to have a slight advantage compared to 128,128, at least in the beginning...
+batchSize = 512
+# How many predictions to consider
+topK = 10
+
 hiddenLayerSizes = [256, 256]
 
 embeddingSizes = {'tag': 32, 'label': 32, 'word': 64}

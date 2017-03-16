@@ -187,20 +187,6 @@ class ParserState(object):
         if index == -1:
             return self.rootLabel()
 
-        # we no longer have <UNKNOWN> in our action domain
-        # never return these for gold label
-        #assert gold_label <= self.feature_maps['label'].lastBaseValue
-
-        #except:
-            # in the case of Out-of-Vocabulary
-            # use case: when using training lexicon but trying to gold-parse
-            # the testing corpus (if testing lexicon has a label that the
-            # training lexicon doesn't have)
-            # FIXME: test to see if this is how SyntaxNet handles the same
-            # problem
-            #gold_label = self.feature_maps['label'] \
-            #    .valueToIndex('<UNKNOWN>')
-
         try:
             gold_label = self.feature_maps['label'] \
                 .valueToIndex(self.getToken(index).DEPREL)

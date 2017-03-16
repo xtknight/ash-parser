@@ -15,7 +15,6 @@ import os
 import argparse
 import json
 import random
-#import cProfile
 
 from model_parameters import *
 from lexicon import *
@@ -264,8 +263,8 @@ class Parser(object):
 
         embedding = embeddingLookupFeatures(embedding_matrix,
                                             tf.reshape(features,
-                                                       [-1],
-                                                       name='feature_%s' % major_type))
+                                                [-1],
+                                                name='feature_%s' % major_type))
 
         return tf.reshape(embedding, [-1, num_features * embedding_size])
 
@@ -409,11 +408,12 @@ class Parser(object):
 
             for i in range(len(self.featureMajorTypeGroups)):
                 major_type = self.featureMajorTypeGroups[i]
-                # it will be number of features*batch size number of sparse integers (ids)
+                # shape will be [-1, number of sparse integer features in group]
                 nodes['feature_endpoints'].append(tf.placeholder(tf.int32, \
                     [None, len(self.featureNames[i])],
                     name="ph_feature_endpoints_%s" % major_type))
-                embeddings.append(self.addEmbedding(nodes['feature_endpoints'][i],
+                embeddings.append(self.addEmbedding( \
+                                            nodes['feature_endpoints'][i],
                                             len(self.featureNames[i]),
                                             self.featureDomainSizes[i],
                                             self.featureEmbeddingSizes[i],
@@ -482,8 +482,6 @@ class Parser(object):
                             logits=logits, labels=dense_golden)),
                         tf.cast(nodes['filled_slots'], tf.float32))
 
-                # cross_entropy = tf.Print(cross_entropy, [cross_entropy], message='cross_entropy')
-
                 # regularize all parameters except output layer
                 regularized_params = [tf.nn.l2_loss(p) for p in weights[:-1]]
                 regularized_params += [tf.nn.l2_loss(p) for p in biases[:-1]]
@@ -526,13 +524,8 @@ class Parser(object):
                 nodes['train_op'] = tf.group(*train_ops, name='train_op')
                 nodes['cost'] = cost
                 nodes['logits'] = logits
-                #writer = tf.summary.FileWriter(self.modelParams.modelFolder, \
-                #    graph=tf.get_default_graph())
             else:
                 nodes['logits'] = logits
-                #writer = tf.summary.FileWriter(self.modelParams.modelFolder, \
-                #    graph=tf.get_default_graph())
-
 
     '''
     Serialize the feature definitions
@@ -929,9 +922,8 @@ def __main__():
     compile(configFile, '<string>', 'exec')
     configNamespace = {}
     exec(configFile, configNamespace)
-
-    # TODO: use trainingSteps
-    requiredFields = ['trainingSteps', 'learningRate', 'batchSize', 'topK',
+    
+    requiredFields = ['learningRate', 'batchSize', 'topK',
                       'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
                       'momentum']
     for field in requiredFields:
@@ -956,11 +948,13 @@ def __main__():
             parser.setupParser('train')
             parser.buildNetwork('train')
             sess.run(list(parser.inits.values()))
+
+            writer = tf.summary.FileWriter(modelParams.modelFolder, \
+                graph=tf.get_default_graph())
+
             parser.startTraining(sess, epochs_to_run=args.epochs,
                 restart=args.restart)
     else:
         assert None, 'evaluation mode not implemented'
 
 __main__()
-
-#cProfile.run('__main__()', 'mainstats')
