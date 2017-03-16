@@ -18,6 +18,7 @@ Similarities to SyntaxNet
 - Same embedding system (configurable per-feature group deep embedding)
 - Same optimizer (Momentum with exponential moving average)
 - Lexicon builder is identical for words, tags, and labels
+- Map files output by SyntaxNet and AshParser should be identical
 - Evaluation metric is identical (SyntaxNet's corresponds to AshParser's UAS)
 - Feature system is almost identical (except perhaps some very rare corner cases)
 - Due to same architecture, accuracy should be very close to Greedy SyntaxNet
