@@ -479,10 +479,19 @@ class Parser(object):
                 dense_golden = batchedSparseToDense(nodes['gold_actions'], \
                     self.ACTION_COUNT)
 
+                #cross_entropy = tf.div(
+                #    tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
+                #            logits=logits, labels=dense_golden)),
+                #        tf.cast(nodes['filled_slots'], tf.float32))
+
+                # we should divide by batch size here, not filled slots
+                # seems to fix the accuracy issue for whatever reason,
+                # even though cost seems to go crazy momentarily
+                # (plummets because only a few slots are filled)
                 cross_entropy = tf.div(
                     tf.reduce_sum(tf.nn.softmax_cross_entropy_with_logits(
                             logits=logits, labels=dense_golden)),
-                        tf.cast(nodes['filled_slots'], tf.float32))
+                        batchSize)
 
                 # regularize all parameters except output layer
                 regularized_params = [tf.nn.l2_loss(p) for p in weights[:-1]]
@@ -710,8 +719,13 @@ class Parser(object):
                     # use continue because in case we shuffle the outer
                     # dimension, we might get the partial batches in the
                     # middle
-                    i += 1
-                    continue
+                    # FIXME: investigate what SyntaxNet does in this case
+                    # have a feeling this might be negatively affecting
+                    # attachmentMetric() function as well, which does process
+                    # partial batches
+                    #i += 1
+                    #continue
+                    pass
                 
                 #print('feature(0) len: %d' % len(features_output[0]))
                 #print('feature(1) len: %d' % len(features_output[1]))
@@ -769,7 +783,7 @@ class Parser(object):
                     epochs_to_run)
                 save_path = saver.save(sess, ckpt_dir + 'model.ckpt')
                 self.logger.info('Model saved to file: %s' % save_path)
-                self.attachmentMetric(sess, runs=100, mode='testing')
+                self.attachmentMetric(sess, runs=200, mode='testing')
                 return
 
     def attachmentMetric(self, sess, runs=200, mode='testing'):
