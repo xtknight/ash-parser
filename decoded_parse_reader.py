@@ -25,7 +25,7 @@ class DecodedParseReader(object):
         self.sentence_batch = SentenceBatch(input_corpus, self.batch_size)
         self.parser_states = [None for i in range(self.batch_size)]
         self.arc_states = [None for i in range(self.batch_size)]
-        self.transition_system = ArcEagerTransitionSystem()
+        self.transition_system = ArcStandardTransitionSystem()
         self.logger = logging.getLogger('DecodedParseReader')
         self.num_epochs = 0
 
@@ -48,7 +48,7 @@ class DecodedParseReader(object):
             # necessary for initializing and pushing root
             # keep arc_states in sync with parser_states
             self.arc_states[i] = \
-                ArcEagerTransitionState(self.parser_states[i])
+                ArcStandardTransitionState(self.parser_states[i])
         else:
             self.parser_states[i] = None
             self.arc_states[i] = None
