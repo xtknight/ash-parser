@@ -70,7 +70,7 @@ class DecodedParseReader(object):
             state = self.state(batch_index)
             if state != None:
                 # default action if none given
-                bestAction = ParserState.SHIFT
+                bestAction = ArcStandardTransitionState.SHIFT
                 bestScore = float('-inf')
 
                 # check to make sure decisions are filled for this batch i
