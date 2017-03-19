@@ -218,14 +218,6 @@ class ArcStandardTransitionSystem(object):
         return state.stackSize() < 2 and (not state.endOfInput())
 
     def isFinalState(self, state):
-        #return state.endOfInput() and (state.stackSize() < 2)
-
-        # self-checking system
-        if state.endOfInput() and (state.stackSize() < 2):
-            for i in range(state.numTokens()):
-                #print(state.getToken(i).FORM)
-                #print(i, state.head(i), state.goldHead(i))
-                assert state.head(i) == state.goldHead(i)
         return state.endOfInput() and (state.stackSize() < 2)
 
     def actionAsTuple(self, action):

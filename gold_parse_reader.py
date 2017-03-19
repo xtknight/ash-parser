@@ -8,6 +8,14 @@ from arc_eager_transition_system import ArcEagerTransitionState, \
      ArcEagerTransitionSystem
 
 '''
+Verify that GoldParseReader parsed a sentence properly
+'''
+def verifyGoldSentenceIntegrity(state):
+    for k in range(state.numTokens()):
+        assert state.head(k) == state.goldHead(k), '%d, %s, %d!=%d' % \
+            (k, state.getToken(k).FORM, state.head(k), state.goldHead(k))
+
+'''
 Provide a batch of gold sentences to the trainer
 
 Maintains batch_size slots of sentences, each one with its own parser state
@@ -94,6 +102,7 @@ class GoldParseReader(object):
                 continue
 
             while(self.transition_system.isFinalState(self.state(i))):
+                verifyGoldSentenceIntegrity(self.state(i))
                 self.logger.debug('Advancing sentence ' + str(i))
                 self.advanceSentence(i)
                 if self.state(i) == None:
