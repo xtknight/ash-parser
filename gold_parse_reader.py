@@ -4,6 +4,8 @@ from sentence_batch import SentenceBatch
 from parser_state import ParserState
 from arc_standard_transition_system import ArcStandardTransitionSystem, \
     ArcStandardTransitionState
+from arc_eager_transition_system import ArcEagerTransitionState, \
+     ArcEagerTransitionSystem
 
 '''
 Provide a batch of gold sentences to the trainer
@@ -59,8 +61,10 @@ class GoldParseReader(object):
                 nextGoldAction = \
                     self.transition_system.getNextGoldAction(self.state(i))
 
-                self.logger.debug('Slot(%d): perform action %s' %
-                    (i, self.transition_system.actionAsString(
+                #print('nextGoldAction:', nextGoldAction)
+
+                self.logger.debug('Slot(%d): perform action %d=%s' %
+                    (i, nextGoldAction, self.transition_system.actionAsString(
                         nextGoldAction, self.state(i), self.feature_maps)))
 
                 try:

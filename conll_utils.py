@@ -8,7 +8,7 @@ the parsing process that are external to the Conll instances themselves
 '''
 
 import logging
-#from utils import *
+import well_formed_filter
 
 def encodeNoneAsUnderscore(s):
     if s == None:
@@ -112,6 +112,48 @@ class ConllSentence(object):
         return '\n'.join(self.tokens[ID-1].toFileOutput(ID) \
             for ID in range(1, len(self.tokens)+1))
 
+    def genSyntaxNetJson(self, token, break_level=None, start_index=0):
+        break_contents = ''
+        if break_level:
+            break_contents = \
+'''
+  break_level       : %s''' % break_level
+
+        return \
+'''token: {
+  word    : "%s"
+  start   : %d
+  end     : %d
+  head    : %d
+  tag     : "%s"
+  category: "%s"
+  label   : "%s"%s
+}''' % (token.FORM, start_index, start_index+len(token.FORM)-1, token.HEAD, token.XPOSTAG, token.UPOSTAG, token.DEPREL, break_contents)
+
+    def genSyntaxNetTextHeader(self):
+        return 'text       : "%s"' % (' '.join(t.FORM for t in self.tokens))
+
+    '''
+    Convert to SyntaxNet JSON format
+    '''
+    def toSyntaxNetJson(self):
+        out = []
+        start_index = 0
+        out.append(self.genSyntaxNetTextHeader())
+        for i in range(len(self.tokens)):
+            if i == 0:
+                out.append(self.genSyntaxNetJson(self.tokens[i], break_level='SENTENCE_BREAK', start_index=start_index))
+            else:
+                out.append(self.genSyntaxNetJson(self.tokens[i], start_index=start_index))
+            start_index += len(self.tokens[i].FORM) + 1 # assume space
+        return '\n'.join(out)
+
+    '''
+    Output the token separated by spaces
+    '''
+    def toSimpleRepresentation(self):
+        return ' '.join(t.FORM for t in self.tokens)
+
 class ParsedConllSentence(ConllSentence):
     def __init__(self, docid):
         super().__init__()
@@ -128,17 +170,30 @@ class ParsedConllSentence(ConllSentence):
 
     def tokenSize(self):
         return len(self.tokens)
-
+    
 '''
 Stores an ordered list of sentences within a CoNLL file
+
+keepMalformed:
+Whether to retain non-projective and invalid examples
+
+projectivize:
+Whether to retain non-projective examples by projectivizing them
+
+logStats:
+Log statistics about the corpus
 '''
 class ConllFile(object):
-    def __init__(self, parsed=False):
+    def __init__(self, parsed=False, keepMalformed=False, projectivize=False,
+            logStats=False):
         #self.sentenceIndex = None
         self.sentences = []
         # use parsed variant of structures
         self.parsed = parsed
         self.logger = logging.getLogger('ConllUtils')
+        self.keepMalformed = keepMalformed
+        self.projectivize = projectivize
+        self.logStats = logStats
 
 
     '''
@@ -153,9 +208,13 @@ class ConllFile(object):
         assert 1 not in excludeCols, 'cannot exclude reading of ID'
         assert 2 not in excludeCols, 'cannot exclude reading of FORM'
 
+        well_formed_inst = well_formed_filter.WellFormedFilter()
+
         # arbitrary ID that can be used with parser
         if self.parsed:
             docid = 0
+
+        ln_num = 0
 
         current_sentence = None
         
@@ -169,6 +228,22 @@ class ConllFile(object):
         #    self.sentenceIndex = len(self.sentences)
 
         def commit(s):
+            # if we're even getting rid of malformed sentences in the first
+            # place...
+            if not self.keepMalformed:
+                if not well_formed_inst.isWellFormed(s,
+                        projectivize=self.projectivize):
+                    # if the sentence is non-projective and projectivize
+                    # is enabled, the sentence will be fixed and not discarded
+                    self.logger.debug('line %d: discarding malformed or non' \
+                        '-projective sentence: "%s"' % \
+                        (ln_num, s.toSimpleRepresentation()))
+                    # as long as we discard the sentence here,
+                    # discarded sentences' words, tags, and labels
+                    # won't be added to the lexicon, which is exactly the
+                    # behavior we want.
+                    return
+
             self.sentences.append(s)
 
         def processUnderscore(s):
@@ -180,7 +255,6 @@ class ConllFile(object):
         # token index (to check that it's in order)
         current_ID = 0
 
-        ln_num = 0
         lines = s.split('\n')
         for ln in lines:
             ln_num += 1
@@ -287,6 +361,29 @@ class ConllFile(object):
             current_ID = 0
             invalid_sentence = False
 
+        if self.logStats:
+            self.logger.info('Projectivized %d/%d non-projective sentences' \
+                ' (%.2f%% of set)' % \
+                (well_formed_inst.projectivizedCount, \
+                well_formed_inst.nonProjectiveCount,
+                100.0 * float(well_formed_inst.projectivizedCount) \
+                    / float(len(self.sentences))
+                ))
+
+            # if we're even getting rid of malformed sentences in the first place...
+            if not self.keepMalformed:
+                if self.projectivize:
+                    # the definition of this variable changes when projectivize is on
+                    self.logger.info('Discarded %d non-well-formed sentences' % \
+                        (well_formed_inst.nonWellFormedCount))
+                else:
+                    self.logger.info('Discarded %d non-well-formed and ' \
+                        ' non-projective sentences' % \
+                        (well_formed_inst.nonWellFormedCount))
+
+            self.logger.info('%d valid sentences processed in total' % \
+                len(self.sentences))
+
     '''
     Write the current CoNLL-U data to the specified file descriptor
     '''
@@ -302,5 +399,6 @@ class ConllFile(object):
             index += 1
 
 class ParsedConllFile(ConllFile):
-    def __init__(self):
-        super().__init__(parsed=True)
+    def __init__(self, keepMalformed=False, projectivize=False, logStats=False):
+        super().__init__(parsed=True, keepMalformed=keepMalformed,
+            projectivize=projectivize, logStats=logStats)

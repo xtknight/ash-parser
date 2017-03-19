@@ -7,6 +7,8 @@ batchSize = 512
 # How many predictions to consider
 topK = 10
 
+projectivizeTrainingSet = True
+
 hiddenLayerSizes = [256, 256]
 
 embeddingSizes = {'tag': 32, 'label': 32, 'word': 64}

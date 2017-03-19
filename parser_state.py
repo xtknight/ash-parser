@@ -6,12 +6,6 @@ from conll_utils import ParsedConllSentence, ParsedConllToken
 Handles an individual parsing state within a sentence
 '''
 class ParserState(object):
-    SHIFT       = 0
-    LEFT_ARC    = 1
-    RIGHT_ARC   = 2
-
-    Transitions = [SHIFT, LEFT_ARC, RIGHT_ARC]
-    
     def __init__(self, sentence, feature_maps):
         self.sentence_ = sentence
         self.stack_ = []
@@ -206,3 +200,9 @@ class ParserState(object):
         if index == -1:
             return ParsedConllToken()
         return self.sentence_.tokens[index]
+
+    ## TODO: what about index==-1??
+    def hasHead(self, index):
+        assert index >= 0
+        assert index < self.num_tokens_
+        return self.head_[index] != -1

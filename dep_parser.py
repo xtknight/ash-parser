@@ -24,6 +24,8 @@ from feature_extractor import SparseFeatureExtractor
 from parser_state import ParserState
 from arc_standard_transition_system import ArcStandardTransitionState, \
      ArcStandardTransitionSystem
+from arc_eager_transition_system import ArcEagerTransitionState, \
+     ArcEagerTransitionSystem
 from gold_parse_reader import GoldParseReader
 from decoded_parse_reader import DecodedParseReader
 from tensorflow.python.ops import state_ops
@@ -65,7 +67,6 @@ parser.add_argument('--scoring-strategy', type=str, default='default',
 
 ## TODO:
 # add param: use pretrained word/sense embeddings gensim/Mikolov
-# projectivize
 
 args = parser.parse_args()
 
@@ -278,7 +279,8 @@ class Parser(object):
         embeddingSizes = self.modelParams.cfg['embeddingSizes']
         batchSize = self.modelParams.cfg['batchSize']
 
-        self.transitionSystem = ArcStandardTransitionSystem()
+        #self.transitionSystem = ArcStandardTransitionSystem()
+        self.transitionSystem = ArcEagerTransitionSystem()
 
         assert len(hiddenLayerSizes) > 0, 'must have at least one hidden layer'
         assert len(featureStrings) == len(set(featureStrings)), \
@@ -537,6 +539,11 @@ class Parser(object):
         bs = self.modelParams.cfg['batchSize']
         d.append(bs)
 
+        # if projectivize parameter is changed, we may have to recalculate
+        # features as well (in case there are non-projective sentences)
+        p = self.modelParams.cfg['projectivizeTrainingSet']
+        d.append(p)
+
         fs = self.modelParams.cfg['featureStrings']
         # order doesn't matter
         fs.sort()
@@ -557,6 +564,8 @@ class Parser(object):
     '''
     def obtainFeatureBags(self, trainingFileName):
         batchSize = self.modelParams.cfg['batchSize']
+        projectivizeTrainingSet = self.modelParams.cfg \
+            ['projectivizeTrainingSet']
 
         activeFeatureDef = self.serializeFeatureDef().strip()
         activeCorpusHash = fileHash(trainingFileName)
@@ -597,7 +606,10 @@ class Parser(object):
             self.logger.info('Feature bag needs recalculation (first training' \
                 ' or features changed)')
 
-            trainingCorpus = ParsedConllFile()
+            # parameters here must match parameters during lexicon generation
+            trainingCorpus = ParsedConllFile(keepMalformed=False,
+                projectivize=projectivizeTrainingSet)
+
             trainingCorpus.read(open(self.modelParams.trainingFile, 'r',
                 encoding='utf-8').read())
 
@@ -925,7 +937,7 @@ def __main__():
     
     requiredFields = ['learningRate', 'batchSize', 'topK',
                       'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
-                      'momentum']
+                      'momentum', 'projectivizeTrainingSet']
     for field in requiredFields:
         assert configNamespace[field] != None, 'please set %s in config' % field
 

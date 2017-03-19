@@ -24,9 +24,19 @@ class Lexicon(object):
     Compute a lexicon (using the training data)
     '''
     def compute(self):
-        trainingData = ParsedConllFile()
+        projectivizeTrainingSet = self.modelParams.cfg \
+            ['projectivizeTrainingSet']
+
+        # parameters here must match parameters during corpus feature bag
+        # generation (such as projectivization)
+        trainingData = ParsedConllFile(keepMalformed=False,
+            projectivize=projectivizeTrainingSet, logStats=True)
+        # log stats here instead of during bag-of-features generation
+        # because lexicon computation always happens during training
+
         trainingData.read(open(self.modelParams.trainingFile, 'r',
                           encoding='utf-8').read())
+
         for sentence in trainingData:
             for token in sentence.tokens:
                 # for SyntaxNet,

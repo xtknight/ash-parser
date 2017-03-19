@@ -10,7 +10,8 @@ class SentenceBatch(object):
     def __init__(self, input_corpus, batch_size=50):
         assert type(input_corpus) is ParsedConllFile
         assert len(input_corpus.sentences) > 0, \
-            'please call read() on input_corpus beforehand'
+            'corpus contains no valid sentences ' \
+            '(or please call read() on input_corpus beforehand)'
         self.input_corpus = input_corpus
         self.batch_size = batch_size
         self.rewind()

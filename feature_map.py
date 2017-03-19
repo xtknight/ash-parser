@@ -8,7 +8,9 @@ Sorting ensures equivalent behavior per run
 '''
 class IndexEncodedFeatureMap(object):
     def __init__(self):
-        self.lastBaseValue = 0
+        # base value doesn't exist
+        # (don't set to 0, as 0 should be a valid index in that case)
+        self.lastBaseValue = -1
         self.isFinalized = False
         self.freq = dict()
 
