@@ -261,10 +261,6 @@ class ArcEagerTransitionSystem(object):
         state.advance()
 
     def isFinalState(self, state):
-        if state.endOfInput():
-            for i in range(state.numTokens()):
-                assert state.head(i) == state.goldHead(i)
-
         return state.endOfInput()
 
     def actionAsTuple(self, action):
@@ -292,3 +288,130 @@ class ArcEagerTransitionSystem(object):
                 feature_maps['label'].indexToValue(self.label(action)) + ')'
         else:
             return 'UNKNOWN'
+
+    '''
+    Dynamic Oracle
+    '''
+    @staticmethod
+    def legal(state):
+        transitions = ArcEagerTransitionSystem.Transitions
+        shift_ok = True
+        right_ok = True
+        left_ok = True
+        reduce_ok = True
+        state_buffer = list(range(state.next_, state.numTokens()))
+
+        if len(state_buffer) == 1:
+            right_ok = shift_ok = False
+
+        if state.stackSize() == 0:
+            left_ok = right_ok = reduce_ok = False
+        else:
+            s = state.stack(0)
+
+            # if the s is already a dependent, we cannot left-arc
+            # arcs_ storage: (parent, rel, child)
+            if len(list(filter(lambda A: s == A[2], state.arcs_))) > 0:
+                left_ok = False
+            else:
+                reduce_ok = False
+        
+        ok = [shift_ok, right_ok, left_ok, reduce_ok]
+
+        legal_transitions = []
+        for it in range(len(transitions)):
+            if ok[it] is True:
+                legal_transitions.append(it)
+
+        return legal_transitions
+
+    @staticmethod
+    def dynamicOracle(state, legal_transitions):
+        options = []
+        if ArcEagerTransitionSystem.SHIFT in legal_transitions \
+                and ArcEagerTransitionSystem.zeroCostShift(state):
+            options.append(ArcEagerTransitionSystem.SHIFT)
+        if ArcEagerTransitionSystem.RIGHT_ARC in legal_transitions \
+                and ArcEagerTransitionSystem.zeroCostRight(state):
+            options.append(ArcEagerTransitionSystem.RIGHT_ARC)
+        if ArcEagerTransitionSystem.LEFT_ARC in legal_transitions \
+                and ArcEagerTransitionSystem.zeroCostLeft(state):
+            options.append(ArcEagerTransitionSystem.LEFT_ARC)
+        if ArcEagerTransitionSystem.REDUCE in legal_transitions \
+                and ArcEagerTransitionSystem.zeroCostReduce(state):
+            options.append(ArcEagerTransitionSystem.REDUCE)
+        return options
+
+    @staticmethod
+    def zeroCostShift(state):
+        state_buffer = list(range(state.next_, state.numTokens()))
+        if len(state_buffer) <= 1:
+            return False
+        b = state.input(0)
+
+        for si in state.stack_:
+            if state.goldHead(si) == b or state.goldHead(b) == si:
+                return False
+        return True
+
+    @staticmethod
+    def zeroCostRight(state):
+        if state.stackSize() == 0 or state.endOfInput():
+            return False
+
+        s = state.stack(0)
+        b = state.input(0)
+        
+        # should be fine? k = b in gold_conf.heads and gold_conf.heads[b] or -1
+        # but why would there be no head for B? makes no sense
+        k = state.goldHead(b)
+        if k == s:
+            return True
+
+        state_buffer = list(range(state.next_, state.numTokens()))
+
+        k_b_costs = k in state.stack_ or k in state_buffer
+        
+        k_heads = dict((child, parent) for (parent, rel, child) in state.arcs_)
+
+        b_deps = state.goldDeps(b)
+
+        # (b, k) and k in S
+        b_k_in_stack = filter(lambda dep: dep in state.stack_, b_deps)
+        b_k_final = filter(lambda dep: dep not in k_heads, b_k_in_stack)
+        if k not in state_buffer and k not in state.stack_ and len(list(b_k_in_stack)) is 0:
+            return True
+
+        if k_b_costs:
+            return False
+
+        return len(list(b_k_final)) == 0
+
+    @staticmethod
+    def zeroCostLeft(state):
+        if state.stackSize() == 0 or state.endOfInput():
+            return False
+
+        s = state.stack(0)
+        b = state.input(0)
+
+        for bi in range(b, state.numTokens()):
+            if state.goldHead(bi) == s:
+                return False
+            if b != bi and state.goldHead(s) == bi:
+                return False
+        return True
+
+    @staticmethod
+    def zeroCostReduce(state):
+        if state.stackSize() == 0 or state.endOfInput():
+            return False
+
+        s = state.stack(0)
+        b = state.input(0)
+
+        for bi in range(b, state.numTokens()):
+            if state.goldHead(bi) == s:
+                return False
+
+        return True
