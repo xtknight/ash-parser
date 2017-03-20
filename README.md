@@ -24,6 +24,7 @@ Similarities to SyntaxNet
 - Due to same architecture, accuracy should be very close to Greedy SyntaxNet
 
 Differences from SyntaxNet:
+- Arc-Eager transition system also supported
 - Context file with redundant or boilerplate information is unnecessary
 - Supports GPU: training phase can complete in minutes
 - Pure Python3 implementation. No need for bazel
@@ -31,5 +32,5 @@ Differences from SyntaxNet:
 - Precalculation and caching of feature bags. This makes it easier to train multiple models with the same token features but different hyperparameters
 - No support for structured (beam) parsing. Considering LSTM or something simpler and faster instead for the future. Accuracy loss should be in the ballpark of 1-2% due to this.
 - Feature groups are automatically created by groups of tag, word, and label rather than by grouping together with semicolon in a context file
-- Only support for the arc-standard transition parser, not the POS tagger, morphological analyzer, or tokenizer
+- Only support for the transition parser, not the POS tagger, morphological analyzer, or tokenizer
 - ngrams, punctuation_amount, morph tags and other features not yet implemented
