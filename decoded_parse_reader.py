@@ -14,7 +14,7 @@ Maintains batch_size slots of sentences, each one with its own parser state
 '''
 class DecodedParseReader(object):
     def __init__(self, input_corpus, batch_size, feature_strings, feature_maps,
-                 epoch_print = True):
+                 transition_system, epoch_print = True):
         self.input_corpus = input_corpus
         self.batch_size = batch_size
         self.feature_strings = feature_strings
@@ -25,7 +25,18 @@ class DecodedParseReader(object):
         self.sentence_batch = SentenceBatch(input_corpus, self.batch_size)
         self.parser_states = [None for i in range(self.batch_size)]
         self.arc_states = [None for i in range(self.batch_size)]
-        self.transition_system = ArcStandardTransitionSystem()
+
+        if transition_system == 'arc-standard':
+            self.transition_system = ArcStandardTransitionSystem()
+            self.transition_system_class = ArcStandardTransitionSystem
+            self.transition_state_class = ArcStandardTransitionState
+        elif transition_system == 'arc-eager':
+            self.transition_system = ArcEagerTransitionSystem()
+            self.transition_system_class = ArcEagerTransitionSystem
+            self.transition_state_class = ArcEagerTransitionState
+        else:
+            assert None, 'transition system must be arc-standard or arc-eager'
+
         self.logger = logging.getLogger('DecodedParseReader')
         self.num_epochs = 0
 
@@ -48,7 +59,7 @@ class DecodedParseReader(object):
             # necessary for initializing and pushing root
             # keep arc_states in sync with parser_states
             self.arc_states[i] = \
-                ArcStandardTransitionState(self.parser_states[i])
+                self.transition_state_class(self.parser_states[i])
         else:
             self.parser_states[i] = None
             self.arc_states[i] = None
@@ -70,7 +81,7 @@ class DecodedParseReader(object):
             state = self.state(batch_index)
             if state != None:
                 # default action if none given
-                bestAction = ArcStandardTransitionSystem.SHIFT
+                bestAction = self.transition_system_class.SHIFT
                 bestScore = float('-inf')
 
                 # check to make sure decisions are filled for this batch i
@@ -190,8 +201,15 @@ class DecodedParseReader(object):
     def addParseToDocument(self, state, rewrite_root_labels, sentence):
         for i in range(state.numTokens()):
             token = sentence.mutableToken(i)
-            token.setParsedLabel(
-                self.feature_maps['label'].indexToValue(state.label(i)))
+
+            try:
+                token.setParsedLabel(
+                    self.feature_maps['label'].indexToValue(state.label(i)))
+            except:
+                # label failure (happens often in ARC-EAGER due to SHIFT/
+                # REDUCE sequences)
+                # TODO: dis-allow REDUCE if no labels assigned?
+                pass
 
             if (state.head(i) != -1):
                 token.setParsedHead(state.head(i))

@@ -68,6 +68,9 @@ parser.add_argument('--scoring-strategy', type=str, default='default',
 ## TODO:
 # add param: use pretrained word/sense embeddings gensim/Mikolov
 
+## FIXME:
+# trying to continue training with different corpus should throw better error
+
 args = parser.parse_args()
 
 if args.debug:
@@ -126,20 +129,12 @@ def embeddingLookupFeatures(params, ids):
       weight of each id. It returns a tensor with each entry of sparse_features
       replaced by this combined embedding.
     """
-    #params = tensorDumpValsAllIter(params, [params], '/tmp/ash_params')
-
     if not isinstance(params, list):
       params = [params]
 
     # Lookup embeddings.
     embeddings = tf.nn.embedding_lookup(params, ids)
-    '''
-    embeddings.shape (6144, 32)
-    embeddings.shape (10240, 32)
-    embeddings.shape (10240, 64)
-    '''
-    #embeddings = tensorDumpValsAllIter(embeddings, [embeddings],
-    #    '/tmp/ash_embeddings')
+    
     return embeddings
 
 '''
@@ -278,9 +273,14 @@ class Parser(object):
         featureStrings = self.modelParams.cfg['featureStrings']
         embeddingSizes = self.modelParams.cfg['embeddingSizes']
         batchSize = self.modelParams.cfg['batchSize']
+        transitionSystem = self.modelParams.cfg['transitionSystem']
 
-        #self.transitionSystem = ArcStandardTransitionSystem()
-        self.transitionSystem = ArcEagerTransitionSystem()
+        if transitionSystem == 'arc-standard':
+            self.transitionSystem = ArcStandardTransitionSystem()
+        elif transitionSystem == 'arc-eager':
+            self.transitionSystem = ArcEagerTransitionSystem()
+        else:
+            assert None, 'transition system must be arc-standard or arc-eager'
 
         assert len(hiddenLayerSizes) > 0, 'must have at least one hidden layer'
         assert len(featureStrings) == len(set(featureStrings)), \
@@ -548,6 +548,10 @@ class Parser(object):
         bs = self.modelParams.cfg['batchSize']
         d.append(bs)
 
+        # when transition system changes, so do the gold actions
+        ts = self.modelParams.cfg['transitionSystem']
+        d.append(ts)
+
         # if projectivize parameter is changed, we may have to recalculate
         # features as well (in case there are non-projective sentences)
         p = self.modelParams.cfg['projectivizeTrainingSet']
@@ -575,6 +579,7 @@ class Parser(object):
         batchSize = self.modelParams.cfg['batchSize']
         projectivizeTrainingSet = self.modelParams.cfg \
             ['projectivizeTrainingSet']
+        transitionSystem = self.modelParams.cfg['transitionSystem']
 
         activeFeatureDef = self.serializeFeatureDef().strip()
         activeCorpusHash = fileHash(trainingFileName)
@@ -624,7 +629,8 @@ class Parser(object):
 
             # Start getting sentence batches...
             reader = GoldParseReader(trainingCorpus, batchSize, \
-                featureStrings, self.featureMaps, epoch_print=False)
+                featureStrings, self.featureMaps, transitionSystem,
+                epoch_print=False)
 
             batches = []
 
@@ -693,6 +699,11 @@ class Parser(object):
 
         batches = self.obtainFeatureBags(self.modelParams.trainingFile)
 
+        if epochs_to_run <= 0:
+            # just do attachment metric if epochs is 0
+            self.attachmentMetric(sess, runs=200, mode='testing')
+            return
+
         epoch_num = 0
 
         while epoch_num < epochs_to_run:
@@ -723,8 +734,8 @@ class Parser(object):
                     # have a feeling this might be negatively affecting
                     # attachmentMetric() function as well, which does process
                     # partial batches
-                    #i += 1
-                    #continue
+                    i += 1
+                    continue
                     pass
                 
                 #print('feature(0) len: %d' % len(features_output[0]))
@@ -788,6 +799,7 @@ class Parser(object):
 
     def attachmentMetric(self, sess, runs=200, mode='testing'):
         batchSize = self.modelParams.cfg['batchSize']
+        transitionSystem = self.modelParams.cfg['transitionSystem']
 
         #batchSize = 128 # let's try a smaller batch for evaluation
         featureStrings = self.modelParams.cfg['featureStrings']
@@ -810,7 +822,8 @@ class Parser(object):
 
         # batch size set at one temporarily
         test_reader_decoded = DecodedParseReader(testingCorpus, \
-            batchSize, featureStrings, self.featureMaps, epoch_print=False)
+            batchSize, featureStrings, self.featureMaps, transitionSystem,
+            epoch_print=False)
 
         correctActions = 0
         correctElems = 0
@@ -951,7 +964,7 @@ def __main__():
     
     requiredFields = ['learningRate', 'batchSize', 'topK',
                       'hiddenLayerSizes', 'embeddingSizes', 'featureStrings',
-                      'momentum', 'projectivizeTrainingSet']
+                      'momentum', 'projectivizeTrainingSet', 'transitionSystem']
     for field in requiredFields:
         assert configNamespace[field] != None, 'please set %s in config' % field
 
