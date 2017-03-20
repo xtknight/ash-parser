@@ -16,6 +16,9 @@ class ParserState(object):
         self.root_label_ = -1 # always use -1 as <ROOT>
         self.feature_maps = feature_maps
 
+        # keep in sync with head_ and label_
+        self.arcs_ = []
+
         for i in range(self.num_tokens_):
             self.head_.append(-1)
             self.label_.append(self.rootLabel())
@@ -162,6 +165,7 @@ class ParserState(object):
         assert index < self.num_tokens_
         self.head_[index] = head
         self.label_[index] = label
+        self.arcs_.append((head, label, index))
 
     def goldHead(self, index):
         assert index >= -1
