@@ -210,3 +210,15 @@ class ParserState(object):
         assert index >= 0
         assert index < self.num_tokens_
         return self.head_[index] != -1
+
+    # TODO: cache or something?
+    # finds dependents
+    def goldDeps(self, index):
+        deps = {}
+        for dep in range(0, self.num_tokens):
+            head = self.goldHead(dep)
+            #if dep != head: # in case of root
+            if head not in deps:
+                deps[head] = []
+            deps[head].append(dep)
+        return deps
