@@ -3,6 +3,9 @@ averagingDecay = 0.9999
 learningRate = 0.08
 momentum = 0.85
 
+#transitionSystem = 'arc-standard'
+transitionSystem = 'arc-eager'
+
 # For sample training set
 # 931 feature bags at batch size 512
 # 6501 feature bags at batch size 64 (performs better)
