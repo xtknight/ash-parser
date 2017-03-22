@@ -1,18 +1,86 @@
 '''
 Represents a feature encoded as a sparse index
+'''
+class UnsortedIndexEncodedFeatureMap(object):
+    def __init__(self):
+        # base value doesn't exist
+        # (don't set to 0, as 0 should be a valid index in that case)
+        self.lastBaseValue = -1
+        self.isFinalized = False
+        self.indexToValueMap = dict()
+        self.valueToIndexMap = dict()
+
+    '''
+    Increment frequency for the specified term
+    If we've never seen this term before, make an entry for it
+    '''
+    def addTerm(self, term):
+        assert not self.isFinalized
+
+        self.lastBaseValue += 1
+        self.indexToValueMap[self.lastBaseValue] = term
+        self.valueToIndexMap[term] = self.lastBaseValue
+    
+    '''
+    Finalize indices and sort by descending frequency of each term, and then
+    alphabetically
+    Index 0 will be the most frequent term
+    '''
+    def finalizeBaseValues(self):
+        assert not self.isFinalized
+        assert len(self.valueToIndexMap) == len(self.indexToValueMap), \
+            'index<->value map length mismatch'
+        self.isFinalized = True
+
+    '''
+    Append special value after finalization, like <NULL>, etc...
+    '''
+    def appendSpecialValue(self, term):
+        assert self.isFinalized
+        if term in self.valueToIndexMap:
+            return # no need to add another index for it
+
+        newTermIndex = len(self.valueToIndexMap)
+        assert newTermIndex not in self.indexToValueMap
+        self.indexToValueMap[newTermIndex] = term
+        self.valueToIndexMap[term] = newTermIndex
+
+        assert len(self.valueToIndexMap) == len(self.indexToValueMap)
+
+    def valueToIndex(self, v):
+        assert self.isFinalized
+        return self.valueToIndexMap[v]
+
+    def indexToValue(self, i):
+        assert self.isFinalized
+        return self.indexToValueMap[i]
+
+    '''
+    Get the number of possible unique values for this feature
+    (optionally excluding special features)
+    '''
+    def getDomainSize(self, includeSpecial=True):
+        assert self.isFinalized
+        if includeSpecial:
+            return len(self.valueToIndexMap)
+        else:
+            return self.lastBaseValue + 1
+
+'''
+Represents a feature encoded as a sparse index
 
 Sorts base values by frequency in descending order and then name in ascending
 order
 
 Sorting ensures equivalent behavior per run
 '''
-class IndexEncodedFeatureMap(object):
+class IndexEncodedFeatureMap(UnsortedIndexEncodedFeatureMap):
     def __init__(self):
-        # base value doesn't exist
-        # (don't set to 0, as 0 should be a valid index in that case)
-        self.lastBaseValue = -1
-        self.isFinalized = False
+        super().__init__()
         self.freq = dict()
+
+    def addTerm(self, term):
+        assert None, 'addTerm() not allowed in IndexEncodedFeatureMap'
 
     '''
     Increment frequency for the specified term
@@ -122,33 +190,3 @@ class IndexEncodedFeatureMap(object):
         assert len(self.valueToIndexMap) == len(self.indexToValueMap), \
             'index<->value map length mismatch'
         self.isFinalized = True
-
-    '''
-    Append special value after finalization, like <NULL>, etc...
-    '''
-    def appendSpecialValue(self, term):
-        assert self.isFinalized
-        if term in self.valueToIndexMap:
-            return # no need to add another index for it
-
-        newTermIndex = len(self.valueToIndexMap)
-        assert newTermIndex not in self.indexToValueMap
-        self.indexToValueMap[newTermIndex] = term
-        self.valueToIndexMap[term] = newTermIndex
-
-        assert len(self.valueToIndexMap) == len(self.indexToValueMap)
-
-    def valueToIndex(self, v):
-        assert self.isFinalized
-        return self.valueToIndexMap[v]
-
-    def indexToValue(self, i):
-        assert self.isFinalized
-        return self.indexToValueMap[i]
-
-    '''
-    Get the number of possible unique values for this feature
-    '''
-    def getDomainSize(self):
-        assert self.isFinalized
-        return len(self.valueToIndexMap)

@@ -344,7 +344,8 @@ class Parser(object):
             self.logger.info('')
             self.logger.info('Feature group \'%s\'' % major_type)
             self.logger.info('... domain size: %d' % \
-                (self.featureMaps[major_type].getDomainSize()))
+                (self.featureMaps[major_type].getDomainSize( \
+                    includeSpecial=True)))
             self.logger.info('... embedding size: %d' % \
                 (self.featureEmbeddingSizes[i]))
             #self.logger.info('... feature count: %d' % \
@@ -359,7 +360,8 @@ class Parser(object):
 
             self.logger.info('... initializing random normal embeddings...')
             self.featureDomainSizes.append(
-                self.featureMaps[major_type].getDomainSize())
+                self.featureMaps[major_type].getDomainSize( \
+                    includeSpecial=True))
 
         assert len(self.featureDomainSizes) == len(self.featureEmbeddingSizes)
         #assert len(self.featureDomainSizes) == len(self.featureEmbeddings)
@@ -377,7 +379,7 @@ class Parser(object):
         # for actions, we don't encode UNKNOWN, ROOT, or OUTSIDE
         # we only encode the number of base values
         self.ACTION_COUNT = self.transitionSystem.numActions(
-            self.featureMaps['label'].lastBaseValue + 1)
+            self.featureMaps['label'].getDomainSize(includeSpecial=False))
 
         self.logger.info('Total action count: %d' % self.ACTION_COUNT)
 
