@@ -17,7 +17,8 @@ def normalizeDigits(form):
 Gets array shape of dynamically shaped tensors
 
 Ex.
-tensorPrintShape(dense_golden, [dense_golden], 'dense_golden shape')
+dense_golden = tensorPrintShape(dense_golden, [dense_golden],
+    'dense_golden shape')
 '''
 def tensorPrintShape(inp, data, comment):
     def np_print(*args):
@@ -27,7 +28,7 @@ def tensorPrintShape(inp, data, comment):
 
 '''
 Ex.
-tensorPrint(dense_golden, [dense_golden], 'dense_golden data')
+dense_golden = tensorPrint(dense_golden, [dense_golden], 'dense_golden data')
 '''
 def tensorPrint(inp, data, comment):
     def np_print(*args):
@@ -39,7 +40,8 @@ tensorDumpValsCallCount = {}
 
 '''
 Ex.
-tensorDumpVals(dense_golden, [dense_golden], '/tmp/ash_dense_golden_1', 1)
+dense_golden = tensorDumpVals(dense_golden, [dense_golden],
+    '/tmp/ash_dense_golden_1', 1)
 '''
 # print only the desired_iter'th time the function is called (1-based)
 # for this particular filename
@@ -67,7 +69,8 @@ def tensorDumpVals(inp, data, fname, desired_iter):
 
 '''
 Ex.
-tensorDumpValsAllIter(dense_golden, [dense_golden], '/tmp/ash_dense_golden')
+dense_golden = tensorDumpValsAllIter(dense_golden, [dense_golden],
+    '/tmp/ash_dense_golden')
 '''
 
 def tensorDumpValsAllIter(inp, data, fname):
