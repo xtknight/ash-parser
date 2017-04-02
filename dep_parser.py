@@ -478,6 +478,7 @@ class Parser(object):
                 nodes['filled_slots'] = tf.placeholder(tf.int32, \
                     name='ph_filled_slots')
 
+                # one-hot encoding for each batch
                 dense_golden = batchedSparseToDense(nodes['gold_actions'], \
                     self.ACTION_COUNT)
 
@@ -537,8 +538,10 @@ class Parser(object):
                 nodes['train_op'] = tf.group(*train_ops, name='train_op')
                 nodes['cost'] = cost
                 nodes['logits'] = logits
+                #nodes['softmax'] = tf.nn.softmax(logits)
             else:
                 nodes['logits'] = logits
+                #nodes['softmax'] = tf.nn.softmax(logits)
 
     '''
     Serialize the feature definitions
@@ -799,6 +802,41 @@ class Parser(object):
                 self.attachmentMetric(sess, runs=200, mode='testing')
                 return
 
+    '''
+    Runs features through the network and gets logits
+
+    'features' must be a list with length being
+    the number of major feature groups
+     - Each major index will represent feature group
+     - Each minor index will represent an id in that feature group
+    '''
+    def feedForward(self, sess, features, mode):
+        assert mode == 'train' or mode == 'eval'
+
+        nodes = None
+        if mode == 'train':
+            # training feed-forward never returns exponentially averaged value
+            nodes = self.training
+        else:
+            # evaluation returns exponentially averaged value if enabled
+            nodes = self.evaluation
+
+        if len(nodes) == 0:
+            # if not already built...
+            self.buildNetwork(mode)
+
+        assert len(nodes['feature_endpoints']) == \
+            len(features), 'feature group count must match'
+        
+        feed_dict = {}
+        for k in range(len(nodes['feature_endpoints'])):
+            feed_dict[nodes['feature_endpoints'][k]] = \
+                np.asarray(features[k]).reshape( \
+                    [-1, len(self.featureNames[k])])
+
+        logits = sess.run(nodes['logits'], feed_dict=feed_dict)
+        return np.asarray(logits)
+
     def attachmentMetric(self, sess, runs=200, mode='testing'):
         batchSize = self.modelParams.cfg['batchSize']
         transitionSystem = self.modelParams.cfg['transitionSystem']
@@ -835,8 +873,6 @@ class Parser(object):
 
         filled_count = 0
 
-        self.buildNetwork('eval')
-
         # eventually will be (filled_count, num_actions)
         logits = np.asarray([])
 
@@ -853,18 +889,8 @@ class Parser(object):
             features_major_types, features_output, epochs, \
                 filled_count = test_reader_output
 
-            assert len(self.evaluation['feature_endpoints']) == \
-                len(features_output)
-
-            feed_dict = {}
-            for k in range(len(self.evaluation['feature_endpoints'])):
-                features_output[k] = np.asarray(features_output[k])
-                feed_dict[self.evaluation['feature_endpoints'][k]] = \
-                    features_output[k].reshape( \
-                        [-1, len(self.featureNames[k])])
-
-            logits = sess.run(self.evaluation['logits'], feed_dict=feed_dict)
-            logits = np.asarray(logits)
+            logits = self.feedForward(sess=sess, features=features_output,
+                mode='eval')
 
             logger.info('Evaluating batch %d/%d...' % (i+1, test_runs))
 
